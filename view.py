@@ -4,10 +4,7 @@ import glob
 from pyproj import Transformer
 import folium
 from folium import plugins
-import rasterio
 from tqdm import tqdm
-from scipy import ndimage
-import json
 from PIL import Image
 import base64
 from io import BytesIO
@@ -16,24 +13,29 @@ import matplotlib.cm as cm
 from matplotlib.colors import LinearSegmentedColormap
 
 
-class EnhancedDaylightMap:
-    """Create detailed interactive maps with full daylight data"""
+class DaylightMapVisualizer:
+    """Create interactive maps from NPY daylight data"""
 
     def __init__(self, results_dir="daylight_results", asc_dir=None):
         self.results_dir = results_dir
         self.asc_dir = asc_dir
-        self.npy_files = glob.glob(os.path.join(results_dir, "*.npy"))
+        self.npy_files = glob.glob(os.path.join(results_dir, "*_daylight.npy"))
         self.transformer = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
         self.metadata = {}
 
-        if asc_dir:
+        print(f"Found {len(self.npy_files)} NPY files in {results_dir}")
+
+        if asc_dir and os.path.exists(asc_dir):
             self.load_metadata()
+        else:
+            print(f"Warning: ASC directory not found: {asc_dir}")
 
     def load_metadata(self):
         """Load metadata from ASC files"""
         asc_files = glob.glob(os.path.join(self.asc_dir, "*.asc"))
+        print(f"Loading metadata from {len(asc_files)} ASC files...")
 
-        for asc_file in tqdm(asc_files[:50], desc="Loading metadata"):  # Limit for testing
+        for asc_file in tqdm(asc_files, desc="Loading metadata"):
             basename = os.path.basename(asc_file).replace('.asc', '')
             header = self.read_asc_header(asc_file)
             if header:
@@ -52,6 +54,8 @@ class EnhancedDaylightMap:
                     'center_wgs84': ((lon_min + lon_max) / 2, (lat_min + lat_max) / 2)
                 }
 
+        print(f"Loaded metadata for {len(self.metadata)} tiles")
+
     def read_asc_header(self, asc_path):
         """Read ASC header"""
         header = {}
@@ -69,18 +73,23 @@ class EnhancedDaylightMap:
                         elif key == 'nodata_value':
                             header[key] = float(value)
             return header
-        except:
+        except Exception as e:
+            print(f"Error reading {asc_path}: {e}")
             return None
 
-    def create_detailed_heatmap(self, output_html="detailed_daylight_map.html",
-                                downsample_factor=10, min_hours=0):
-        """Create detailed heatmap with street-level zoom capability"""
+    def create_comprehensive_map(self, output_html="daylight_full_map.html",
+                                  downsample_factor=1, min_hours=0):
+        """Create comprehensive map with ALL data points from NPY files"""
 
-        if not self.metadata:
-            print("No metadata available")
+        if not self.npy_files:
+            print("No NPY files found!")
             return
 
-        # Calculate map center
+        if not self.metadata:
+            print("No metadata available - need ASC files for georeferencing")
+            return
+
+        # Calculate map center from all tiles
         all_lats = []
         all_lons = []
         for meta in self.metadata.values():
@@ -88,10 +97,12 @@ class EnhancedDaylightMap:
             all_lons.append(center[0])
             all_lats.append(center[1])
 
-        center_lat = np.mean(all_lats) if all_lats else 45.9474
-        center_lon = np.mean(all_lons) if all_lons else 5.8082
+        center_lat = np.mean(all_lats) if all_lats else 46.0
+        center_lon = np.mean(all_lons) if all_lons else 6.0
 
-        # Create base map with multiple tile layers
+        print(f"Map center: {center_lat:.4f}°N, {center_lon:.4f}°E")
+
+        # Create base map
         m = folium.Map(
             location=[center_lat, center_lon],
             zoom_start=11,
@@ -99,10 +110,10 @@ class EnhancedDaylightMap:
             control_scale=True
         )
 
-        # Add multiple base layers for better context
+        # Add multiple base layers
         folium.TileLayer(
             tiles='OpenStreetMap',
-            name='OpenStreetMap',
+            name='Street Map',
             overlay=False,
             control=True
         ).add_to(m)
@@ -123,20 +134,24 @@ class EnhancedDaylightMap:
             control=True
         ).add_to(m)
 
-        # Process each tile and create overlay images
-        print("Creating detailed heatmap overlays...")
+        # Process ALL tiles and create overlay images
+        print(f"Creating map overlays for {len(self.npy_files)} tiles...")
+        processed_count = 0
+        total_pixels = 0
 
-        for npy_file in tqdm(self.npy_files[:20], desc="Processing tiles for map"):  # Limit for demo
+        for npy_file in tqdm(self.npy_files, desc="Processing tiles"):
             basename = os.path.basename(npy_file).replace('_daylight.npy', '')
 
             if basename not in self.metadata:
+                print(f"Skipping {basename} - no metadata")
                 continue
 
-            # Load daylight data
+            # Load daylight data (FULL RESOLUTION - no filtering)
             daylight = np.load(npy_file)
+            total_pixels += daylight.size
             meta = self.metadata[basename]
 
-            # Downsample for web performance
+            # Optional downsampling only for web performance
             if downsample_factor > 1:
                 daylight = daylight[::downsample_factor, ::downsample_factor]
 
@@ -144,78 +159,41 @@ class EnhancedDaylightMap:
             overlay_img = self.create_overlay_image(daylight, min_hours)
 
             if overlay_img:
-                # Add as image overlay
                 folium.raster_layers.ImageOverlay(
                     image=overlay_img,
                     bounds=meta['bounds_wgs84'],
                     opacity=0.6,
-                    name=f'Daylight {basename}',
+                    name=f'Tile {basename}',
                     overlay=True,
-                    control=True,
+                    control=False,  # Don't show individual tiles in layer control
                     zindex=1
                 ).add_to(m)
+                processed_count += 1
 
-        # Add a feature group for high daylight markers
-        high_sun_group = folium.FeatureGroup(name='Optimal Locations (>14h)')
+        print(f"Processed {processed_count} tiles with {total_pixels:,} total data points")
 
-        # Add markers for optimal spots
-        for npy_file in self.npy_files[:20]:
-            basename = os.path.basename(npy_file).replace('_daylight.npy', '')
+        # Add markers for optimal locations
+        print("Adding markers for optimal sunlight locations...")
+        self.add_optimal_location_markers(m, min_hours=14)
 
-            if basename not in self.metadata:
-                continue
+        # Add heatmap layer
+        print("Creating heatmap layer...")
+        self.add_heatmap_layer(m, min_hours=12)
 
-            daylight = np.load(npy_file)
-            meta = self.metadata[basename]
-            header = meta['header']
-
-            # Find local maxima
-            maxima = self.find_local_maxima(daylight, threshold=14, window_size=20)
-
-            for i, j in maxima[:10]:  # Limit markers per tile
-                # Convert to coordinates
-                x = header['xllcorner'] + j * header['cellsize']
-                y = header['yllcorner'] + (header['nrows'] - i) * header['cellsize']
-                lon, lat = self.transformer.transform(x, y)
-                hours = float(daylight[i, j])
-
-                # Add marker with popup
-                popup_html = f"""
-                <div style="width: 200px;">
-                    <h4>Optimal Sun Location</h4>
-                    <b>Daylight Hours:</b> {hours:.1f}h<br>
-                    <b>Coordinates:</b> {lat:.5f}, {lon:.5f}<br>
-                    <b>Tile:</b> {basename}<br>
-                    <hr>
-                    <small>Click to copy coordinates</small>
-                </div>
-                """
-
-                icon_color = 'red' if hours >= 15 else 'orange' if hours >= 14.5 else 'yellow'
-
-                folium.Marker(
-                    location=[lat, lon],
-                    popup=folium.Popup(popup_html, max_width=250),
-                    tooltip=f"{hours:.1f}h of daylight",
-                    icon=folium.Icon(color=icon_color, icon='sun', prefix='fa')
-                ).add_to(high_sun_group)
-
-        high_sun_group.add_to(m)
-
-        # Add heatmap layer with all data points
-        self.add_density_heatmap(m, threshold=14)
+        # Add statistics to legend
+        stats = self.calculate_statistics()
 
         # Add custom legend
-        legend_html = '''
-        <div style="position: fixed; 
-                    bottom: 50px; right: 50px; width: 250px; 
+        legend_html = f'''
+        <div style="position: fixed;
+                    bottom: 50px; right: 50px; width: 300px;
                     background-color: white; z-index:9999; font-size:14px;
                     border:2px solid grey; border-radius: 5px; padding: 10px">
-        <p style="margin: 0;"><b>Daylight Hours (Summer Solstice)</b></p>
+        <p style="margin: 0;"><b>Daylight Hours Map - Full Resolution</b></p>
         <div style="margin: 5px 0;">
-            <div style="background: linear-gradient(to right, #2c3e50, #3498db, #f39c12, #e74c3c, #c0392b); 
+            <div style="background: linear-gradient(to right, #2c3e50, #3498db, #f1c40f, #e67e22, #e74c3c);
                         height: 20px; border-radius: 3px;"></div>
-            <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+            <div style="display: flex; justify-content: space-between; margin-top: 5px; font-size: 11px;">
                 <span>0h</span>
                 <span>8h</span>
                 <span>12h</span>
@@ -224,8 +202,13 @@ class EnhancedDaylightMap:
             </div>
         </div>
         <hr style="margin: 10px 0;">
-        <p style="margin: 5px 0;"><small>Toggle layers using control panel</small></p>
-        <p style="margin: 5px 0;"><small>Zoom in for street-level detail</small></p>
+        <p style="margin: 5px 0; font-size: 12px;"><b>Tiles:</b> {processed_count}</p>
+        <p style="margin: 5px 0; font-size: 12px;"><b>Data Points:</b> {total_pixels:,}</p>
+        <p style="margin: 5px 0; font-size: 12px;"><b>Min:</b> {stats['min']:.1f}h | <b>Max:</b> {stats['max']:.1f}h</p>
+        <p style="margin: 5px 0; font-size: 12px;"><b>Mean:</b> {stats['mean']:.1f}h</p>
+        <hr style="margin: 10px 0;">
+        <p style="margin: 5px 0; font-size: 11px;"><small>Toggle layers in top-left panel</small></p>
+        <p style="margin: 5px 0; font-size: 11px;"><small>All pixels processed (no filtering)</small></p>
         </div>
         '''
         m.get_root().html.add_child(folium.Element(legend_html))
@@ -244,17 +227,16 @@ class EnhancedDaylightMap:
         # Add measurement control
         plugins.MeasureControl(position='topleft', primary_length_unit='meters').add_to(m)
 
-        # Add search control
-        plugins.Search(
-            layer=high_sun_group,
-            search_label='popup',
-            search_zoom=15,
-            position='topright'
-        ).add_to(m)
-
         # Save map
         m.save(output_html)
-        print(f"Saved detailed map to {output_html}")
+        print(f"\n{'='*60}")
+        print(f"Map saved to: {output_html}")
+        print(f"Tiles processed: {processed_count}")
+        print(f"Total data points: {total_pixels:,}")
+        print(f"Downsampling: {downsample_factor}x (1 = full resolution)")
+        print(f"{'='*60}\n")
+
+        return m
 
     def create_overlay_image(self, daylight_data, min_hours=0):
         """Create a colored overlay image from daylight data"""
@@ -268,9 +250,8 @@ class EnhancedDaylightMap:
             normalized = (masked_data - vmin) / (vmax - vmin)
 
             # Create custom colormap
-            colors = ['#2c3e50', '#34495e', '#3498db', '#f39c12', '#e74c3c', '#c0392b']
-            n_bins = 100
-            cmap = LinearSegmentedColormap.from_list('daylight', colors, N=n_bins)
+            colors = ['#2c3e50', '#3498db', '#f1c40f', '#e67e22', '#e74c3c']
+            cmap = LinearSegmentedColormap.from_list('daylight', colors)
 
             # Apply colormap
             colored = cmap(normalized)
@@ -292,33 +273,12 @@ class EnhancedDaylightMap:
             print(f"Error creating overlay: {e}")
             return None
 
-    def find_local_maxima(self, data, threshold=14, window_size=20):
-        """Find local maxima in the daylight data"""
-        # Apply threshold
-        mask = data >= threshold
+    def add_optimal_location_markers(self, map_obj, min_hours=14):
+        """Add markers for optimal sunlight locations"""
+        marker_group = folium.FeatureGroup(name='Optimal Locations (>14h)', show=True)
 
-        if not np.any(mask):
-            return []
-
-        # Find local maxima
-        from scipy.ndimage import maximum_filter
-        local_max = maximum_filter(data, size=window_size)
-        maxima = (data == local_max) & mask
-
-        # Get coordinates
-        coords = np.column_stack(np.where(maxima))
-
-        # Sort by value
-        values = [data[i, j] for i, j in coords]
-        sorted_indices = np.argsort(values)[::-1]
-
-        return coords[sorted_indices].tolist()
-
-    def add_density_heatmap(self, map_obj, threshold=14, sample_rate=50):
-        """Add a density heatmap layer"""
-        heat_data = []
-
-        for npy_file in self.npy_files[:20]:  # Process subset
+        marker_count = 0
+        for npy_file in self.npy_files:
             basename = os.path.basename(npy_file).replace('_daylight.npy', '')
 
             if basename not in self.metadata:
@@ -328,167 +288,194 @@ class EnhancedDaylightMap:
             meta = self.metadata[basename]
             header = meta['header']
 
-            # Sample points above threshold
-            high_sun = daylight >= threshold
-            indices = np.where(high_sun)
+            # Find local maxima
+            maxima = self.find_local_maxima(daylight, threshold=min_hours, window_size=20)
 
-            if len(indices[0]) > 0:
-                # Sample to avoid too many points
-                n_samples = min(sample_rate, len(indices[0]))
-                sample_idx = np.random.choice(len(indices[0]), n_samples, replace=False)
+            for i, j in maxima[:5]:  # Top 5 per tile
+                # Convert to coordinates
+                x = header['xllcorner'] + j * header['cellsize']
+                y = header['yllcorner'] + (header['nrows'] - i) * header['cellsize']
+                lon, lat = self.transformer.transform(x, y)
+                hours = float(daylight[i, j])
 
-                for idx in sample_idx:
-                    i, j = indices[0][idx], indices[1][idx]
+                popup_html = f"""
+                <div style="width: 220px;">
+                    <h4 style="color: #e67e22;">Optimal Sun Location</h4>
+                    <b>Daylight:</b> {hours:.2f}h<br>
+                    <b>Coordinates:</b> {lat:.5f}°N, {lon:.5f}°E<br>
+                    <b>Tile:</b> {basename}<br>
+                    <hr>
+                    <small>Full resolution data</small>
+                </div>
+                """
 
-                    # Convert to lat/lon
-                    x = header['xllcorner'] + j * header['cellsize']
-                    y = header['yllcorner'] + (header['nrows'] - i) * header['cellsize']
-                    lon, lat = self.transformer.transform(x, y)
+                icon_color = 'red' if hours >= 15 else 'orange' if hours >= 14.5 else 'yellow'
 
-                    weight = float(daylight[i, j]) / 16.0  # Normalize weight
-                    heat_data.append([float(lat), float(lon), weight])
+                folium.Marker(
+                    location=[lat, lon],
+                    popup=folium.Popup(popup_html, max_width=250),
+                    tooltip=f"{hours:.2f}h daylight",
+                    icon=folium.Icon(color=icon_color, icon='sun', prefix='fa')
+                ).add_to(marker_group)
+                marker_count += 1
 
-        if heat_data:
-            # Add heatmap layer
-            plugins.HeatMap(
-                heat_data,
-                name='Daylight Density',
-                min_opacity=0.3,
-                max_zoom=18,
-                radius=25,
-                blur=15,
-                gradient={
-                    0.0: 'blue',
-                    0.5: 'lime',
-                    0.7: 'yellow',
-                    0.9: 'orange',
-                    1.0: 'red'
-                },
-                overlay=True,
-                control=True,
-                show=False  # Hidden by default
-            ).add_to(map_obj)
+        marker_group.add_to(map_obj)
+        print(f"Added {marker_count} optimal location markers")
 
-    def create_focused_area_map(self, center_lambert_x, center_lambert_y,
-                                radius_m=5000, output_html="focused_area.html"):
-        """Create a detailed map for a specific area"""
+    def find_local_maxima(self, data, threshold=14, window_size=20):
+        """Find local maxima in daylight data"""
+        mask = data >= threshold
 
-        # Convert center to lat/lon
-        center_lon, center_lat = self.transformer.transform(center_lambert_x, center_lambert_y)
+        if not np.any(mask):
+            return []
 
-        # Create map centered on the area
-        m = folium.Map(
-            location=[center_lat, center_lon],
-            zoom_start=14,
-            max_zoom=20
-        )
+        from scipy.ndimage import maximum_filter
+        local_max = maximum_filter(data, size=window_size)
+        maxima = (data == local_max) & mask
 
-        # Add detailed tile layers
-        folium.TileLayer('OpenStreetMap').add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Esri',
-            name='Satellite HD',
-            overlay=False,
-            control=True
-        ).add_to(m)
+        coords = np.column_stack(np.where(maxima))
+        values = [data[i, j] for i, j in coords]
+        sorted_indices = np.argsort(values)[::-1]
 
-        # Process only nearby tiles
-        for npy_file in self.npy_files:
+        return coords[sorted_indices].tolist()
+
+    def add_heatmap_layer(self, map_obj, min_hours=12):
+        """Add heatmap layer with sample points"""
+        heat_data = []
+
+        for npy_file in self.npy_files[:50]:  # Sample from first 50 tiles
             basename = os.path.basename(npy_file).replace('_daylight.npy', '')
 
             if basename not in self.metadata:
                 continue
 
+            daylight = np.load(npy_file)
             meta = self.metadata[basename]
-            bounds = meta['bounds_lambert']
+            header = meta['header']
 
-            # Check if tile is within radius
-            tile_center_x = (bounds[0] + bounds[2]) / 2
-            tile_center_y = (bounds[1] + bounds[3]) / 2
+            # Sample high-sunlight points
+            high_sun_mask = daylight >= min_hours
+            indices = np.where(high_sun_mask)
 
-            distance = np.sqrt((tile_center_x - center_lambert_x) ** 2 +
-                               (tile_center_y - center_lambert_y) ** 2)
+            if len(indices[0]) > 0:
+                # Sample points
+                n_samples = min(100, len(indices[0]))
+                sample_idx = np.random.choice(len(indices[0]), n_samples, replace=False)
 
-            if distance <= radius_m:
-                # Load and process this tile at full resolution
-                daylight = np.load(npy_file)
+                for idx in sample_idx:
+                    i, j = indices[0][idx], indices[1][idx]
+                    x = header['xllcorner'] + j * header['cellsize']
+                    y = header['yllcorner'] + (header['nrows'] - i) * header['cellsize']
+                    lon, lat = self.transformer.transform(x, y)
+                    weight = float(daylight[i, j]) / 16.0
+                    heat_data.append([float(lat), float(lon), weight])
 
-                # Create detailed overlay
-                overlay_img = self.create_overlay_image(daylight, min_hours=12)
+        if heat_data:
+            plugins.HeatMap(
+                heat_data,
+                name='Daylight Density Heatmap',
+                min_opacity=0.4,
+                max_zoom=18,
+                radius=20,
+                blur=15,
+                gradient={
+                    0.0: '#2c3e50',
+                    0.5: '#f1c40f',
+                    1.0: '#e74c3c'
+                },
+                overlay=True,
+                control=True,
+                show=False
+            ).add_to(map_obj)
+            print(f"Added heatmap with {len(heat_data)} sample points")
 
-                if overlay_img:
-                    folium.raster_layers.ImageOverlay(
-                        image=overlay_img,
-                        bounds=meta['bounds_wgs84'],
-                        opacity=0.7,
-                        name=f'Daylight {basename}'
-                    ).add_to(m)
+    def calculate_statistics(self):
+        """Calculate statistics across all NPY files"""
+        all_values = []
 
-        # Add circle to show area of interest
-        folium.Circle(
-            location=[center_lat, center_lon],
-            radius=radius_m,
-            color='red',
-            fill=False,
-            weight=2
-        ).add_to(m)
+        for npy_file in self.npy_files:
+            daylight = np.load(npy_file)
+            valid_data = daylight[~np.isnan(daylight) & (daylight > 0)]
+            all_values.extend(valid_data.flatten().tolist())
 
-        # Save map
-        m.save(output_html)
-        print(f"Saved focused area map to {output_html}")
-        return m
+        all_values = np.array(all_values)
+
+        return {
+            'min': all_values.min() if len(all_values) > 0 else 0,
+            'max': all_values.max() if len(all_values) > 0 else 0,
+            'mean': all_values.mean() if len(all_values) > 0 else 0,
+            'median': np.median(all_values) if len(all_values) > 0 else 0
+        }
+
+    def print_statistics(self):
+        """Print detailed statistics"""
+        stats = self.calculate_statistics()
+
+        print("\n" + "="*60)
+        print("DAYLIGHT DATA STATISTICS (ALL TILES)")
+        print("="*60)
+        print(f"NPY files: {len(self.npy_files)}")
+        print(f"Tiles with metadata: {len(self.metadata)}")
+        print(f"\nDaylight Hours:")
+        print(f"  Minimum: {stats['min']:.2f}h")
+        print(f"  Maximum: {stats['max']:.2f}h")
+        print(f"  Mean: {stats['mean']:.2f}h")
+        print(f"  Median: {stats['median']:.2f}h")
+        print("="*60 + "\n")
 
 
-def create_comprehensive_maps():
-    """Create all map types"""
+def create_maps():
+    """Create comprehensive daylight maps from NPY files"""
+
+    print("="*60)
+    print("DAYLIGHT MAP GENERATOR - FULL RESOLUTION")
+    print("="*60)
 
     # Paths
     RESULTS_DIR = "daylight_results"
     ASC_DIR = "RGEALTI/1_DONNEES_LIVRAISON_2021-10-00009/RGEALTI_MNT_5M_ASC_LAMB93_IGN69_D074"
 
-    print("Creating comprehensive daylight maps...")
-    print("=" * 60)
+    # Initialize visualizer
+    viz = DaylightMapVisualizer(RESULTS_DIR, ASC_DIR)
 
-    # Initialize mapper
-    mapper = EnhancedDaylightMap(RESULTS_DIR, ASC_DIR if os.path.exists(ASC_DIR) else None)
-
-    if not mapper.metadata:
-        print("Warning: No ASC directory found, using NPY files only")
+    if not viz.npy_files:
+        print(f"ERROR: No NPY files found in {RESULTS_DIR}")
+        print("Run compute.py first to generate daylight data")
         return
 
-    # 1. Create main detailed map
-    print("\n1. Creating detailed heatmap with street overlay...")
-    mapper.create_detailed_heatmap(
-        output_html="daylight_detailed_map.html",
-        downsample_factor=5,  # Less downsampling for more detail
-        min_hours=10  # Show all areas with >10 hours
+    # Print statistics
+    viz.print_statistics()
+
+    # Create full resolution map
+    print("\n1. Creating FULL RESOLUTION map (all data points)...")
+    viz.create_comprehensive_map(
+        output_html="daylight_map_full.html",
+        downsample_factor=1,  # FULL RESOLUTION - NO FILTERING
+        min_hours=0
     )
 
-    # 2. Create high-resolution map for best area (example coordinates)
-    print("\n2. Creating focused area map...")
-    # Example: focus on area near Annecy (you can change these coordinates)
-    mapper.create_focused_area_map(
-        center_lambert_x=915000,  # Example Lambert 93 coordinates
-        center_lambert_y=6545000,
-        radius_m=3000,
-        output_html="focused_annecy_area.html"
+    # Create downsampled map for web performance
+    print("\n2. Creating web-optimized map (5x downsampled for browser)...")
+    viz.create_comprehensive_map(
+        output_html="daylight_map_web.html",
+        downsample_factor=5,  # 5x downsampling for web
+        min_hours=8
     )
 
-    print("\n" + "=" * 60)
-    print("Maps created successfully!")
+    print("\n" + "="*60)
+    print("MAP GENERATION COMPLETE!")
+    print("="*60)
     print("\nGenerated files:")
-    print("- daylight_detailed_map.html : Full interactive map with streets")
-    print("- focused_annecy_area.html : High-detail focused area")
+    print("  1. daylight_map_full.html - Full resolution (may be large)")
+    print("  2. daylight_map_web.html - Web-optimized (5x downsampled)")
     print("\nFeatures:")
-    print("- Multiple base layers (Streets, Satellite, Topographic)")
-    print("- Zoom to street level (max zoom 18)")
-    print("- Measurement tools")
-    print("- Fullscreen mode")
-    print("- Search functionality")
-    print("- Daylight overlay on all tiles")
-    print("=" * 60)
+    print("  - All data points from NPY files (no filtering)")
+    print("  - Multiple base layers (Street, Satellite, Topographic)")
+    print("  - Optimal location markers")
+    print("  - Heatmap layer")
+    print("  - Measurement tools and fullscreen mode")
+    print("="*60)
 
 
 if __name__ == "__main__":
-    create_comprehensive_maps()
+    create_maps()
