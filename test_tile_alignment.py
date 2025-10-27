@@ -131,15 +131,46 @@ def main():
     # Test with first tile
     if tiles:
         t = tiles[0]
+        header = t['header']
+        cellsize = header['cellsize']
+
         print(f"\nTile: {t['name']}")
-        print(f"Lambert93 corners:")
+        print(f"\nLambert93 EDGES (old, incorrect):")
         print(f"  SW: ({t['xmin']}, {t['ymin']})")
         print(f"  NE: ({t['xmax']}, {t['ymax']})")
 
-        lon_sw, lat_sw = transformer.transform(t['xmin'], t['ymin'])
-        lon_ne, lat_ne = transformer.transform(t['xmax'], t['ymax'])
+        lon_sw_edge, lat_sw_edge = transformer.transform(t['xmin'], t['ymin'])
+        lon_ne_edge, lat_ne_edge = transformer.transform(t['xmax'], t['ymax'])
 
-        print(f"\nWGS84 corners:")
+        print(f"\nWGS84 from edges (old, incorrect):")
+        print(f"  SW: ({lon_sw_edge:.6f}, {lat_sw_edge:.6f})")
+        print(f"  NE: ({lon_ne_edge:.6f}, {lat_ne_edge:.6f})")
+
+        south_edge = min(lat_sw_edge, lat_ne_edge)
+        north_edge = max(lat_sw_edge, lat_ne_edge)
+        west_edge = min(lon_sw_edge, lon_ne_edge)
+        east_edge = max(lon_sw_edge, lon_ne_edge)
+
+        print(f"\nOLD bounds (incorrect): [[{south_edge:.6f}, {west_edge:.6f}], [{north_edge:.6f}, {east_edge:.6f}]]")
+
+        # Now calculate using pixel CENTERS (correct)
+        print(f"\n" + "-"*70)
+        print("CORRECTED: Using pixel CENTERS")
+        print("-"*70)
+
+        xmin_center = header['xllcorner'] + 0.5 * cellsize
+        ymin_center = header['yllcorner'] + 0.5 * cellsize
+        xmax_center = header['xllcorner'] + (header['ncols'] - 0.5) * cellsize
+        ymax_center = header['yllcorner'] + (header['nrows'] - 0.5) * cellsize
+
+        print(f"\nLambert93 pixel CENTERS (correct):")
+        print(f"  SW: ({xmin_center}, {ymin_center})")
+        print(f"  NE: ({xmax_center}, {ymax_center})")
+
+        lon_sw, lat_sw = transformer.transform(xmin_center, ymin_center)
+        lon_ne, lat_ne = transformer.transform(xmax_center, ymax_center)
+
+        print(f"\nWGS84 from pixel centers (correct):")
         print(f"  SW: ({lon_sw:.6f}, {lat_sw:.6f})")
         print(f"  NE: ({lon_ne:.6f}, {lat_ne:.6f})")
 
@@ -148,7 +179,7 @@ def main():
         west = min(lon_sw, lon_ne)
         east = max(lon_sw, lon_ne)
 
-        print(f"\nFolium bounds: [[{south:.6f}, {west:.6f}], [{north:.6f}, {east:.6f}]]")
+        print(f"\nNEW bounds (correct): [[{south:.6f}, {west:.6f}], [{north:.6f}, {east:.6f}]]")
 
         # Verify transformation is monotonic
         if lat_ne > lat_sw:
@@ -166,22 +197,31 @@ def main():
         print("TESTING SPECIFIC POINT (Row 0, Col 20)")
         print("="*70)
 
-        header = t['header']
         i, j = 0, 20  # Row 0, Col 20
 
-        x_lambert = header['xllcorner'] + (j + 0.5) * header['cellsize']
-        y_lambert = header['yllcorner'] + (header['nrows'] - i - 0.5) * header['cellsize']
+        x_lambert = header['xllcorner'] + (j + 0.5) * cellsize
+        y_lambert = header['yllcorner'] + (header['nrows'] - i - 0.5) * cellsize
 
         print(f"Lambert93: ({x_lambert}, {y_lambert})")
 
         lon, lat = transformer.transform(x_lambert, y_lambert)
         print(f"WGS84: ({lon:.6f}, {lat:.6f})")
 
-        # Check if point is within bounds
-        if south <= lat <= north and west <= lon <= east:
-            print(f"✓ Point is within tile bounds")
+        # Check if point is within OLD bounds (should FAIL)
+        print(f"\nChecking against OLD bounds (edges):")
+        if south_edge <= lat <= north_edge and west_edge <= lon <= east_edge:
+            print(f"✓ Point is within OLD bounds")
         else:
-            print(f"✗ WARNING: Point is OUTSIDE tile bounds!")
+            print(f"✗ Point is OUTSIDE OLD bounds (expected!)")
+            print(f"  lat {lat:.6f} should be in [{south_edge:.6f}, {north_edge:.6f}]")
+            print(f"  lon {lon:.6f} should be in [{west_edge:.6f}, {east_edge:.6f}]")
+
+        # Check if point is within NEW bounds (should PASS)
+        print(f"\nChecking against NEW bounds (pixel centers):")
+        if south <= lat <= north and west <= lon <= east:
+            print(f"✓ Point is within NEW bounds (correct!)")
+        else:
+            print(f"✗ WARNING: Point is OUTSIDE NEW bounds!")
             print(f"  lat {lat:.6f} should be in [{south:.6f}, {north:.6f}]")
             print(f"  lon {lon:.6f} should be in [{west:.6f}, {east:.6f}]")
 

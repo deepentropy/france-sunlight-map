@@ -45,16 +45,24 @@ class DaylightMapVisualizer:
             basename = os.path.basename(asc_file).replace('.asc', '')
             header = self.read_asc_header(asc_file)
             if header:
-                # Lambert 93 coordinates (corners of the grid)
-                xmin = header['xllcorner']
-                ymin = header['yllcorner']
-                xmax = xmin + header['ncols'] * header['cellsize']
-                ymax = ymin + header['nrows'] * header['cellsize']
+                # CRITICAL FIX: Use pixel CENTERS not edges for bounds
+                # ASC xllcorner/yllcorner are the EDGES of corner pixels
+                # But Folium ImageOverlay displays pixel CENTERS
+                # So bounds must span from first pixel center to last pixel center
+                cellsize = header['cellsize']
 
-                # Transform corners to WGS84 (lat/lon)
-                # Lower-left corner
+                # First pixel centers (southwest)
+                xmin = header['xllcorner'] + 0.5 * cellsize
+                ymin = header['yllcorner'] + 0.5 * cellsize
+
+                # Last pixel centers (northeast)
+                xmax = header['xllcorner'] + (header['ncols'] - 0.5) * cellsize
+                ymax = header['yllcorner'] + (header['nrows'] - 0.5) * cellsize
+
+                # Transform pixel centers to WGS84 (lat/lon)
+                # Southwest pixel center
                 lon_sw, lat_sw = self.transformer.transform(xmin, ymin)
-                # Upper-right corner
+                # Northeast pixel center
                 lon_ne, lat_ne = self.transformer.transform(xmax, ymax)
 
                 # Folium expects bounds as: [[south, west], [north, east]]
