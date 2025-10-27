@@ -2,3 +2,5 @@
 .ipynb_checkpoints
 daylight_results/
 RGEALTI/
+*.log
+*.html
