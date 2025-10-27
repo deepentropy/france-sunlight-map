@@ -483,7 +483,7 @@ def main():
             return
 
     # Parameters - Optimized for RTX 4090 24GB
-    BATCH_SIZE = 50  # Process 50 tiles in parallel (50×3.8MB = 190MB)
+    BATCH_SIZE = 240  # Process 50 tiles in parallel (50×3.8MB = 190MB)
                      # Increase to 80-100 for even faster processing
 
     logger.info("=" * 60)
