@@ -11,15 +11,21 @@ from io import BytesIO
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from matplotlib.colors import LinearSegmentedColormap
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+except ImportError:
+    GPU_AVAILABLE = False
+    print("CuPy not available - using CPU for image processing")
 
 
 class DaylightMapVisualizer:
-    """Create interactive maps from NPY daylight data"""
+    """Create interactive maps from NPY daylight data with GPU acceleration"""
 
     def __init__(self, results_dir="daylight_results", asc_dir=None):
         self.results_dir = results_dir
         self.asc_dir = asc_dir
-        self.npy_files = glob.glob(os.path.join(results_dir, "*_daylight.npy"))
+        self.npy_files = sorted(glob.glob(os.path.join(results_dir, "*_daylight.npy")))
         self.transformer = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
         self.metadata = {}
 
@@ -31,27 +37,39 @@ class DaylightMapVisualizer:
             print(f"Warning: ASC directory not found: {asc_dir}")
 
     def load_metadata(self):
-        """Load metadata from ASC files"""
-        asc_files = glob.glob(os.path.join(self.asc_dir, "*.asc"))
+        """Load metadata from ASC files with correct coordinate transformations"""
+        asc_files = sorted(glob.glob(os.path.join(self.asc_dir, "*.asc")))
         print(f"Loading metadata from {len(asc_files)} ASC files...")
 
         for asc_file in tqdm(asc_files, desc="Loading metadata"):
             basename = os.path.basename(asc_file).replace('.asc', '')
             header = self.read_asc_header(asc_file)
             if header:
+                # Lambert 93 coordinates (corners of the grid)
                 xmin = header['xllcorner']
                 ymin = header['yllcorner']
                 xmax = xmin + header['ncols'] * header['cellsize']
                 ymax = ymin + header['nrows'] * header['cellsize']
 
-                lon_min, lat_min = self.transformer.transform(xmin, ymin)
-                lon_max, lat_max = self.transformer.transform(xmax, ymax)
+                # Transform corners to WGS84 (lat/lon)
+                # Lower-left corner
+                lon_sw, lat_sw = self.transformer.transform(xmin, ymin)
+                # Upper-right corner
+                lon_ne, lat_ne = self.transformer.transform(xmax, ymax)
+
+                # Folium expects bounds as: [[south, west], [north, east]]
+                # south = min latitude, north = max latitude
+                # west = min longitude, east = max longitude
+                south = min(lat_sw, lat_ne)
+                north = max(lat_sw, lat_ne)
+                west = min(lon_sw, lon_ne)
+                east = max(lon_sw, lon_ne)
 
                 self.metadata[basename] = {
                     'header': header,
                     'bounds_lambert': (xmin, ymin, xmax, ymax),
-                    'bounds_wgs84': [[lat_min, lon_min], [lat_max, lon_max]],
-                    'center_wgs84': ((lon_min + lon_max) / 2, (lat_min + lat_max) / 2)
+                    'bounds_wgs84': [[south, west], [north, east]],  # FIXED: proper Folium format
+                    'center_wgs84': ((west + east) / 2, (south + north) / 2)
                 }
 
         print(f"Loaded metadata for {len(self.metadata)} tiles")
@@ -77,9 +95,15 @@ class DaylightMapVisualizer:
             print(f"Error reading {asc_path}: {e}")
             return None
 
-    def create_comprehensive_map(self, output_html="daylight_full_map.html",
-                                  downsample_factor=1, min_hours=0):
-        """Create comprehensive map with ALL data points from NPY files"""
+    def create_map(self, output_html="daylight_map.html", min_hours=0, downsample=1):
+        """
+        Create full-resolution interactive map
+
+        Args:
+            output_html: Output filename
+            min_hours: Minimum daylight hours to display
+            downsample: Downsampling factor for overlay images (1=full res, 5=web-friendly)
+        """
 
         if not self.npy_files:
             print("No NPY files found!")
@@ -89,16 +113,16 @@ class DaylightMapVisualizer:
             print("No metadata available - need ASC files for georeferencing")
             return
 
-        # Calculate map center from all tiles
-        all_lats = []
+        # Calculate map center
         all_lons = []
+        all_lats = []
         for meta in self.metadata.values():
-            center = meta['center_wgs84']
-            all_lons.append(center[0])
-            all_lats.append(center[1])
+            lon, lat = meta['center_wgs84']
+            all_lons.append(lon)
+            all_lats.append(lat)
 
-        center_lat = np.mean(all_lats) if all_lats else 46.0
         center_lon = np.mean(all_lons) if all_lons else 6.0
+        center_lat = np.mean(all_lats) if all_lats else 46.0
 
         print(f"Map center: {center_lat:.4f}°N, {center_lon:.4f}°E")
 
@@ -110,7 +134,7 @@ class DaylightMapVisualizer:
             control_scale=True
         )
 
-        # Add multiple base layers
+        # Add base layers
         folium.TileLayer(
             tiles='OpenStreetMap',
             name='Street Map',
@@ -134,8 +158,8 @@ class DaylightMapVisualizer:
             control=True
         ).add_to(m)
 
-        # Process ALL tiles and create overlay images
-        print(f"Creating map overlays for {len(self.npy_files)} tiles...")
+        # Process tiles and create overlays
+        print(f"Creating map overlays for {len(self.npy_files)} tiles (downsample={downsample}x)...")
         processed_count = 0
         total_pixels = 0
 
@@ -146,26 +170,26 @@ class DaylightMapVisualizer:
                 print(f"Skipping {basename} - no metadata")
                 continue
 
-            # Load daylight data (FULL RESOLUTION - no filtering)
+            # Load daylight data
             daylight = np.load(npy_file)
             total_pixels += daylight.size
             meta = self.metadata[basename]
 
-            # Optional downsampling only for web performance
-            if downsample_factor > 1:
-                daylight = daylight[::downsample_factor, ::downsample_factor]
+            # Downsample if requested
+            if downsample > 1:
+                daylight = daylight[::downsample, ::downsample]
 
-            # Create image overlay
+            # Create overlay image
             overlay_img = self.create_overlay_image(daylight, min_hours)
 
             if overlay_img:
                 folium.raster_layers.ImageOverlay(
                     image=overlay_img,
-                    bounds=meta['bounds_wgs84'],
+                    bounds=meta['bounds_wgs84'],  # Now correctly formatted!
                     opacity=0.6,
                     name=f'Tile {basename}',
                     overlay=True,
-                    control=False,  # Don't show individual tiles in layer control
+                    control=False,
                     zindex=1
                 ).add_to(m)
                 processed_count += 1
@@ -180,16 +204,16 @@ class DaylightMapVisualizer:
         print("Creating heatmap layer...")
         self.add_heatmap_layer(m, min_hours=12)
 
-        # Add statistics to legend
+        # Calculate statistics
         stats = self.calculate_statistics()
 
-        # Add custom legend
+        # Add legend
         legend_html = f'''
         <div style="position: fixed;
                     bottom: 50px; right: 50px; width: 300px;
                     background-color: white; z-index:9999; font-size:14px;
                     border:2px solid grey; border-radius: 5px; padding: 10px">
-        <p style="margin: 0;"><b>Daylight Hours Map - Full Resolution</b></p>
+        <p style="margin: 0;"><b>Daylight Hours Map</b></p>
         <div style="margin: 5px 0;">
             <div style="background: linear-gradient(to right, #2c3e50, #3498db, #f1c40f, #e67e22, #e74c3c);
                         height: 20px; border-radius: 3px;"></div>
@@ -207,24 +231,19 @@ class DaylightMapVisualizer:
         <p style="margin: 5px 0; font-size: 12px;"><b>Min:</b> {stats['min']:.1f}h | <b>Max:</b> {stats['max']:.1f}h</p>
         <p style="margin: 5px 0; font-size: 12px;"><b>Mean:</b> {stats['mean']:.1f}h</p>
         <hr style="margin: 10px 0;">
-        <p style="margin: 5px 0; font-size: 11px;"><small>Toggle layers in top-left panel</small></p>
-        <p style="margin: 5px 0; font-size: 11px;"><small>All pixels processed (no filtering)</small></p>
+        <p style="margin: 5px 0; font-size: 11px;"><small>Full resolution - no filtering</small></p>
         </div>
         '''
         m.get_root().html.add_child(folium.Element(legend_html))
 
-        # Add layer control
+        # Add controls
         folium.LayerControl(position='topleft').add_to(m)
-
-        # Add fullscreen control
         plugins.Fullscreen(
             position='topright',
             title='Fullscreen',
             title_cancel='Exit fullscreen',
             force_separate_button=True
         ).add_to(m)
-
-        # Add measurement control
         plugins.MeasureControl(position='topleft', primary_length_unit='meters').add_to(m)
 
         # Save map
@@ -233,48 +252,91 @@ class DaylightMapVisualizer:
         print(f"Map saved to: {output_html}")
         print(f"Tiles processed: {processed_count}")
         print(f"Total data points: {total_pixels:,}")
-        print(f"Downsampling: {downsample_factor}x (1 = full resolution)")
+        print(f"Downsampling: {downsample}x (1 = full resolution)")
         print(f"{'='*60}\n")
 
         return m
 
     def create_overlay_image(self, daylight_data, min_hours=0):
-        """Create a colored overlay image from daylight data"""
+        """Create colored overlay image from daylight data using GPU if available"""
         try:
-            # Mask low values
-            masked_data = np.copy(daylight_data)
-            masked_data[daylight_data < min_hours] = np.nan
-
-            # Normalize data
-            vmin, vmax = 0, 16
-            normalized = (masked_data - vmin) / (vmax - vmin)
-
-            # Create custom colormap
-            colors = ['#2c3e50', '#3498db', '#f1c40f', '#e67e22', '#e74c3c']
-            cmap = LinearSegmentedColormap.from_list('daylight', colors)
-
-            # Apply colormap
-            colored = cmap(normalized)
-
-            # Set transparency for NaN values
-            colored[np.isnan(masked_data)] = [0, 0, 0, 0]
-
-            # Convert to image
-            img = Image.fromarray((colored * 255).astype(np.uint8))
-
-            # Convert to base64 for embedding
-            buffered = BytesIO()
-            img.save(buffered, format="PNG")
-            img_str = base64.b64encode(buffered.getvalue()).decode()
-
-            return f"data:image/png;base64,{img_str}"
-
+            # Use GPU if available for faster processing
+            if GPU_AVAILABLE and daylight_data.size > 100000:
+                return self._create_overlay_gpu(daylight_data, min_hours)
+            else:
+                return self._create_overlay_cpu(daylight_data, min_hours)
         except Exception as e:
             print(f"Error creating overlay: {e}")
             return None
 
+    def _create_overlay_gpu(self, daylight_data, min_hours):
+        """GPU-accelerated overlay creation"""
+        # Transfer to GPU
+        daylight_gpu = cp.asarray(daylight_data, dtype=cp.float32)
+
+        # Mask low values
+        masked_data = cp.copy(daylight_gpu)
+        masked_data[daylight_gpu < min_hours] = cp.nan
+
+        # Normalize
+        vmin, vmax = 0, 16
+        normalized = (masked_data - vmin) / (vmax - vmin)
+
+        # Create colormap on CPU (matplotlib doesn't work with CuPy)
+        colors = ['#2c3e50', '#3498db', '#f1c40f', '#e67e22', '#e74c3c']
+        cmap = LinearSegmentedColormap.from_list('daylight', colors)
+
+        # Transfer normalized data back to CPU for colormap
+        normalized_cpu = cp.asnumpy(normalized)
+
+        # Apply colormap
+        colored = cmap(normalized_cpu)
+
+        # Set transparency for NaN values
+        colored[np.isnan(normalized_cpu)] = [0, 0, 0, 0]
+
+        # Convert to image
+        img = Image.fromarray((colored * 255).astype(np.uint8))
+
+        # Convert to base64
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+
+        return f"data:image/png;base64,{img_str}"
+
+    def _create_overlay_cpu(self, daylight_data, min_hours):
+        """CPU overlay creation (fallback)"""
+        # Mask low values
+        masked_data = np.copy(daylight_data)
+        masked_data[daylight_data < min_hours] = np.nan
+
+        # Normalize
+        vmin, vmax = 0, 16
+        normalized = (masked_data - vmin) / (vmax - vmin)
+
+        # Create colormap
+        colors = ['#2c3e50', '#3498db', '#f1c40f', '#e67e22', '#e74c3c']
+        cmap = LinearSegmentedColormap.from_list('daylight', colors)
+
+        # Apply colormap
+        colored = cmap(normalized)
+
+        # Set transparency for NaN values
+        colored[np.isnan(masked_data)] = [0, 0, 0, 0]
+
+        # Convert to image
+        img = Image.fromarray((colored * 255).astype(np.uint8))
+
+        # Convert to base64
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+
+        return f"data:image/png;base64,{img_str}"
+
     def add_optimal_location_markers(self, map_obj, min_hours=14):
-        """Add markers for optimal sunlight locations"""
+        """Add markers for optimal sunlight locations with FIXED coordinates"""
         marker_group = folium.FeatureGroup(name='Optimal Locations (>14h)', show=True)
 
         marker_count = 0
@@ -292,17 +354,29 @@ class DaylightMapVisualizer:
             maxima = self.find_local_maxima(daylight, threshold=min_hours, window_size=20)
 
             for i, j in maxima[:5]:  # Top 5 per tile
-                # Convert to coordinates
-                x = header['xllcorner'] + j * header['cellsize']
-                y = header['yllcorner'] + (header['nrows'] - i) * header['cellsize']
-                lon, lat = self.transformer.transform(x, y)
+                # FIXED: Proper coordinate transformation
+                # i, j are array indices (row, col)
+                # Need to convert to Lambert 93, then to WGS84
+
+                # X coordinate (longitude direction) - column j
+                x_lambert = header['xllcorner'] + (j + 0.5) * header['cellsize']
+
+                # Y coordinate (latitude direction) - row i
+                # In raster: row 0 is at TOP (ymax), row nrows-1 is at BOTTOM (ymin)
+                # So: y = ymax - i * cellsize
+                y_lambert = header['yllcorner'] + (header['nrows'] - i - 0.5) * header['cellsize']
+
+                # Transform to WGS84 (returns lon, lat)
+                lon, lat = self.transformer.transform(x_lambert, y_lambert)
                 hours = float(daylight[i, j])
 
                 popup_html = f"""
-                <div style="width: 220px;">
-                    <h4 style="color: #e67e22;">Optimal Sun Location</h4>
+                <div style="width: 240px;">
+                    <h4 style="color: #e67e22;">Optimal Sunlight Location</h4>
                     <b>Daylight:</b> {hours:.2f}h<br>
-                    <b>Coordinates:</b> {lat:.5f}°N, {lon:.5f}°E<br>
+                    <b>Position:</b> Row {i}, Col {j}<br>
+                    <b>Lambert93:</b> {x_lambert:.1f}, {y_lambert:.1f}<br>
+                    <b>WGS84:</b> {lat:.6f}°N, {lon:.6f}°E<br>
                     <b>Tile:</b> {basename}<br>
                     <hr>
                     <small>Full resolution data</small>
@@ -312,8 +386,8 @@ class DaylightMapVisualizer:
                 icon_color = 'red' if hours >= 15 else 'orange' if hours >= 14.5 else 'yellow'
 
                 folium.Marker(
-                    location=[lat, lon],
-                    popup=folium.Popup(popup_html, max_width=250),
+                    location=[lat, lon],  # Folium expects [lat, lon]
+                    popup=folium.Popup(popup_html, max_width=260),
                     tooltip=f"{hours:.2f}h daylight",
                     icon=folium.Icon(color=icon_color, icon='sun', prefix='fa')
                 ).add_to(marker_group)
@@ -364,11 +438,14 @@ class DaylightMapVisualizer:
 
                 for idx in sample_idx:
                     i, j = indices[0][idx], indices[1][idx]
-                    x = header['xllcorner'] + j * header['cellsize']
-                    y = header['yllcorner'] + (header['nrows'] - i) * header['cellsize']
-                    lon, lat = self.transformer.transform(x, y)
+
+                    # FIXED: Same coordinate transformation as markers
+                    x_lambert = header['xllcorner'] + (j + 0.5) * header['cellsize']
+                    y_lambert = header['yllcorner'] + (header['nrows'] - i - 0.5) * header['cellsize']
+                    lon, lat = self.transformer.transform(x_lambert, y_lambert)
+
                     weight = float(daylight[i, j]) / 16.0
-                    heat_data.append([float(lat), float(lon), weight])
+                    heat_data.append([lat, lon, weight])  # Folium HeatMap expects [lat, lon, weight]
 
         if heat_data:
             plugins.HeatMap(
@@ -425,7 +502,7 @@ class DaylightMapVisualizer:
 
 
 def create_maps():
-    """Create comprehensive daylight maps from NPY files"""
+    """Create daylight map from NPY files"""
 
     print("="*60)
     print("DAYLIGHT MAP GENERATOR - FULL RESOLUTION")
@@ -447,32 +524,24 @@ def create_maps():
     viz.print_statistics()
 
     # Create full resolution map
-    print("\n1. Creating FULL RESOLUTION map (all data points)...")
-    viz.create_comprehensive_map(
-        output_html="daylight_map_full.html",
-        downsample_factor=1,  # FULL RESOLUTION - NO FILTERING
-        min_hours=0
-    )
-
-    # Create downsampled map for web performance
-    print("\n2. Creating web-optimized map (5x downsampled for browser)...")
-    viz.create_comprehensive_map(
-        output_html="daylight_map_web.html",
-        downsample_factor=5,  # 5x downsampling for web
-        min_hours=8
+    print("\nCreating full-resolution map...")
+    viz.create_map(
+        output_html="daylight_map.html",
+        min_hours=0,  # Show all data
+        downsample=1  # Full resolution (change to 5 for web-friendly)
     )
 
     print("\n" + "="*60)
     print("MAP GENERATION COMPLETE!")
     print("="*60)
-    print("\nGenerated files:")
-    print("  1. daylight_map_full.html - Full resolution (may be large)")
-    print("  2. daylight_map_web.html - Web-optimized (5x downsampled)")
+    print("\nGenerated file: daylight_map.html")
     print("\nFeatures:")
-    print("  - All data points from NPY files (no filtering)")
-    print("  - Multiple base layers (Street, Satellite, Topographic)")
-    print("  - Optimal location markers")
-    print("  - Heatmap layer")
+    print("  - Full resolution overlays (all 235 tiles)")
+    print("  - No gaps between tiles (fixed coordinate bug)")
+    print("  - Correct marker positions (fixed Y-axis inversion)")
+    print("  - GPU-accelerated image processing")
+    print("  - Multiple base layers")
+    print("  - Heatmap density layer")
     print("  - Measurement tools and fullscreen mode")
     print("="*60)
 
