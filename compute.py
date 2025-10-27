@@ -146,10 +146,9 @@ class CuPySolarCalculator:
         return np.degrees(elevations), np.degrees(azimuths)
 
     def compute_shadows_gpu_cupy(self, elevation_np, sun_positions, pixel_size=5.0):
-        """Compute shadows using CuPy (pure GPU arrays)"""
+        """Compute shadows using CuPy (pure GPU arrays) - GPU ONLY MODE"""
         if not self.gpu_available:
-            logger.info("GPU not available, using CPU")
-            return self.compute_shadows_cpu(elevation_np, sun_positions, pixel_size)
+            raise RuntimeError("GPU is required for computation. CPU fallback has been disabled for full accuracy.")
 
         try:
             height, width = elevation_np.shape
@@ -186,9 +185,10 @@ class CuPySolarCalculator:
                 shadows_gpu[cp.isnan(elevation_gpu)] = 0
 
                 # Compute shadows using vectorized operations
-                max_dist = min(50, min(height, width) // 4)
+                # Increased distance for better accuracy
+                max_dist = min(100, min(height, width) // 2)
 
-                for d in range(1, max_dist, 2):  # Check every other distance
+                for d in range(1, max_dist):  # Check EVERY distance (no skipping)
                     # Source positions
                     source_i = (i_indices_gpu + int(d * dy)).astype(cp.int32)
                     source_j = (j_indices_gpu + int(d * dx)).astype(cp.int32)
@@ -227,56 +227,8 @@ class CuPySolarCalculator:
             return total_daylight
 
         except Exception as e:
-            logger.warning(f"GPU computation failed: {e}")
-            return self.compute_shadows_cpu(elevation_np, sun_positions, pixel_size)
-
-    def compute_shadows_cpu(self, elevation, sun_positions, pixel_size=5.0):
-        """Optimized CPU fallback using NumPy vectorization"""
-        height, width = elevation.shape
-        total_daylight = np.zeros((height, width), dtype=np.float32)
-
-        for sun_elev, sun_azim in tqdm(sun_positions, desc="Computing shadows (CPU)", leave=False):
-            if sun_elev <= 0:
-                continue
-
-            shadows = np.ones((height, width), dtype=np.float32)
-            shadows[np.isnan(elevation)] = 0
-
-            sun_elev_rad = np.radians(sun_elev)
-            sun_azim_rad = np.radians(sun_azim)
-
-            dx = -np.sin(sun_azim_rad)
-            dy = np.cos(sun_azim_rad)
-            tan_elev = np.tan(sun_elev_rad)
-
-            # Use stride for faster computation
-            stride = 3
-            max_dist = min(30, min(height, width) // 4)
-
-            for i in range(0, height, stride):
-                for j in range(0, width, stride):
-                    if np.isnan(elevation[i, j]):
-                        continue
-
-                    base_elev = elevation[i, j]
-
-                    for d in range(1, max_dist, 2):
-                        check_i = int(i + d * dy)
-                        check_j = int(j + d * dx)
-
-                        if 0 <= check_i < height and 0 <= check_j < width:
-                            if not np.isnan(elevation[check_i, check_j]):
-                                dist_m = d * pixel_size
-                                required_elev = base_elev + dist_m * tan_elev
-
-                                if elevation[check_i, check_j] > required_elev:
-                                    shadows[i:min(i + stride, height),
-                                    j:min(j + stride, width)] = 0
-                                    break
-
-            total_daylight += shadows * 0.5
-
-        return total_daylight
+            logger.error(f"GPU computation failed: {e}")
+            raise RuntimeError(f"GPU computation failed and CPU fallback is disabled. Error: {e}")
 
 
 class BatchProcessor:
@@ -446,7 +398,7 @@ def main():
             return
 
     # Parameters
-    MAX_TILES = 10  # Start with 10 for testing, set to None for all 235
+    MAX_TILES = None  # Process ALL tiles (no limit)
     BATCH_SIZE = 5  # Process 5 files at a time to manage memory
 
     logger.info("=" * 60)
