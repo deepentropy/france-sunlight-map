@@ -340,6 +340,7 @@ class DaylightMapVisualizer:
         marker_group = folium.FeatureGroup(name='Optimal Locations (>14h)', show=True)
 
         marker_count = 0
+        debug_count = 0  # DEBUG: Track first few markers
         for npy_file in self.npy_files:
             basename = os.path.basename(npy_file).replace('_daylight.npy', '')
 
@@ -369,6 +370,19 @@ class DaylightMapVisualizer:
                 # Transform to WGS84 (returns lon, lat)
                 lon, lat = self.transformer.transform(x_lambert, y_lambert)
                 hours = float(daylight[i, j])
+
+                # DEBUG: Print first 10 markers
+                if debug_count < 10:
+                    print(f"\nDEBUG Marker #{debug_count + 1}:")
+                    print(f"  Tile: {basename}")
+                    print(f"  Row: {i}, Col: {j}")
+                    print(f"  Header: xllcorner={header['xllcorner']}, yllcorner={header['yllcorner']}, nrows={header['nrows']}, cellsize={header['cellsize']}")
+                    print(f"  Calculation: x = {header['xllcorner']} + ({j} + 0.5) * {header['cellsize']} = {x_lambert}")
+                    print(f"  Calculation: y = {header['yllcorner']} + ({header['nrows']} - {i} - 0.5) * {header['cellsize']} = {y_lambert}")
+                    print(f"  Lambert93: {x_lambert:.1f}, {y_lambert:.1f}")
+                    print(f"  WGS84: {lat:.6f}°N, {lon:.6f}°E")
+                    print(f"  Daylight: {hours:.2f}h")
+                    debug_count += 1
 
                 popup_html = f"""
                 <div style="width: 240px;">
