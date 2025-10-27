@@ -108,7 +108,8 @@ class DaylightMapVisualizer:
             print(f"Error reading {asc_path}: {e}")
             return None
 
-    def create_map(self, output_html="daylight_map.html", min_hours=0, downsample=1):
+    def create_map(self, output_html="daylight_map.html", min_hours=0, downsample=1,
+                   markers_per_tile=5, max_tiles=None):
         """
         Create full-resolution interactive map
 
@@ -116,6 +117,8 @@ class DaylightMapVisualizer:
             output_html: Output filename
             min_hours: Minimum daylight hours to display
             downsample: Downsampling factor for overlay images (1=full res, 5=web-friendly)
+            markers_per_tile: Number of markers to show per tile (default 5, use 1-2 for lightweight)
+            max_tiles: Maximum tiles to process (None=all, use 50 for debugging)
         """
 
         if not self.npy_files:
@@ -172,11 +175,12 @@ class DaylightMapVisualizer:
         ).add_to(m)
 
         # Process tiles and create overlays
-        print(f"Creating map overlays for {len(self.npy_files)} tiles (downsample={downsample}x)...")
+        tiles_to_process = self.npy_files[:max_tiles] if max_tiles else self.npy_files
+        print(f"Creating map overlays for {len(tiles_to_process)} tiles (downsample={downsample}x)...")
         processed_count = 0
         total_pixels = 0
 
-        for npy_file in tqdm(self.npy_files, desc="Processing tiles"):
+        for npy_file in tqdm(tiles_to_process, desc="Processing tiles"):
             basename = os.path.basename(npy_file).replace('_daylight.npy', '')
 
             if basename not in self.metadata:
@@ -211,7 +215,8 @@ class DaylightMapVisualizer:
 
         # Add markers for optimal locations
         print("Adding markers for optimal sunlight locations...")
-        self.add_optimal_location_markers(m, min_hours=14)
+        self.add_optimal_location_markers(m, min_hours=14, markers_per_tile=markers_per_tile,
+                                          max_tiles=len(tiles_to_process))
 
         # Add heatmap layer
         print("Creating heatmap layer...")
@@ -348,13 +353,14 @@ class DaylightMapVisualizer:
 
         return f"data:image/png;base64,{img_str}"
 
-    def add_optimal_location_markers(self, map_obj, min_hours=14):
+    def add_optimal_location_markers(self, map_obj, min_hours=14, markers_per_tile=5, max_tiles=None):
         """Add markers for optimal sunlight locations with FIXED coordinates"""
         marker_group = folium.FeatureGroup(name='Optimal Locations (>14h)', show=True)
 
         marker_count = 0
         debug_count = 0  # DEBUG: Track first few markers
-        for npy_file in self.npy_files:
+        tiles_to_process = self.npy_files[:max_tiles] if max_tiles else self.npy_files
+        for npy_file in tiles_to_process:
             basename = os.path.basename(npy_file).replace('_daylight.npy', '')
 
             if basename not in self.metadata:
@@ -367,7 +373,7 @@ class DaylightMapVisualizer:
             # Find local maxima
             maxima = self.find_local_maxima(daylight, threshold=min_hours, window_size=20)
 
-            for i, j in maxima[:5]:  # Top 5 per tile
+            for i, j in maxima[:markers_per_tile]:  # Configurable markers per tile
                 # FIXED: Proper coordinate transformation
                 # i, j are array indices (row, col)
                 # Need to convert to Lambert 93, then to WGS84
@@ -529,10 +535,10 @@ class DaylightMapVisualizer:
 
 
 def create_maps():
-    """Create daylight map from NPY files"""
+    """Create daylight maps from NPY files"""
 
     print("="*60)
-    print("DAYLIGHT MAP GENERATOR - FULL RESOLUTION")
+    print("DAYLIGHT MAP GENERATOR")
     print("="*60)
 
     # Paths
@@ -550,26 +556,50 @@ def create_maps():
     # Print statistics
     viz.print_statistics()
 
+    # Create lightweight debugging map (target ~10MB)
+    print("\n" + "="*60)
+    print("CREATING LIGHTWEIGHT MAP (for debugging)")
+    print("="*60)
+    print("  - 50 tiles (not all 235)")
+    print("  - Downsampled 3x (333x333 pixels)")
+    print("  - 2 markers per tile (not 5)")
+    print("  - Target size: ~10MB")
+    viz.create_map(
+        output_html="daylight_map_light.html",
+        min_hours=0,
+        downsample=3,  # 3x downsampling: 1000/3 ≈ 333 pixels
+        markers_per_tile=2,  # Fewer markers
+        max_tiles=50  # First 50 tiles only
+    )
+
     # Create full resolution map
-    print("\nCreating full-resolution map...")
+    print("\n" + "="*60)
+    print("CREATING FULL RESOLUTION MAP")
+    print("="*60)
+    print("  - All 235 tiles")
+    print("  - Full resolution (1000x1000 pixels)")
+    print("  - 5 markers per tile")
+    print("  - Expected size: ~60MB")
     viz.create_map(
         output_html="daylight_map.html",
-        min_hours=0,  # Show all data
-        downsample=1  # Full resolution (change to 5 for web-friendly)
+        min_hours=0,
+        downsample=1,  # Full resolution
+        markers_per_tile=5,
+        max_tiles=None  # All tiles
     )
 
     print("\n" + "="*60)
     print("MAP GENERATION COMPLETE!")
     print("="*60)
-    print("\nGenerated file: daylight_map.html")
+    print("\nGenerated files:")
+    print("  - daylight_map_light.html (~10MB, for quick review)")
+    print("  - daylight_map.html (~60MB, full resolution)")
     print("\nFeatures:")
-    print("  - Full resolution overlays (all 235 tiles)")
-    print("  - No gaps between tiles (fixed coordinate bug)")
-    print("  - Correct marker positions (fixed Y-axis inversion)")
+    print("  - No gaps between tiles (4-corner projection fix)")
+    print("  - Correct marker positions (pixel center bounds)")
     print("  - GPU-accelerated image processing")
     print("  - Multiple base layers")
     print("  - Heatmap density layer")
-    print("  - Measurement tools and fullscreen mode")
     print("="*60)
 
 
