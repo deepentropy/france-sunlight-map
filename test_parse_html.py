@@ -73,18 +73,20 @@ def parse_html():
     for marker in markers:
         markers_by_tile[marker['tile']].append(marker)
 
+    # IMPORTANT: Both tiles and bounds are generated in SORTED ORDER
+    # NPY files are processed sorted, and HTML bounds are written in same order
+    # So we match by INDEX, not by geographic overlap
+    sorted_tile_names = sorted(markers_by_tile.keys())
+
     # Test first few tiles
     issues_found = 0
     tiles_tested = 0
 
-    for tile_name in sorted(markers_by_tile.keys())[:10]:
+    for idx, tile_name in enumerate(sorted_tile_names[:10]):
         tile_markers = markers_by_tile[tile_name]
 
-        print(f"\nTile: {tile_name}")
+        print(f"\nTile #{idx+1}: {tile_name}")
         print(f"  Markers: {len(tile_markers)}")
-
-        # Find the bounds that should contain these markers
-        # We need to find which tile boundary contains these marker positions
 
         # Get marker extent
         marker_lats = [m['lat'] for m in tile_markers]
@@ -96,19 +98,16 @@ def parse_html():
 
         print(f"  Marker extent: lat [{marker_south:.6f}, {marker_north:.6f}], lon [{marker_west:.6f}, {marker_east:.6f}]")
 
-        # Find matching tile bounds
+        # Match by INDEX since both are in sorted order
         matching_bounds = None
-        for bounds in tile_bounds:
-            # Check if markers fall roughly within this tile
-            lat_overlap = not (marker_north < bounds['south'] or marker_south > bounds['north'])
-            lon_overlap = not (marker_east < bounds['west'] or marker_west > bounds['east'])
-
-            if lat_overlap and lon_overlap:
-                matching_bounds = bounds
-                break
+        if idx < len(tile_bounds):
+            matching_bounds = tile_bounds[idx]
+            print(f"  Tile bounds (index {idx}): lat [{matching_bounds['south']:.6f}, {matching_bounds['north']:.6f}], lon [{matching_bounds['west']:.6f}, {matching_bounds['east']:.6f}]")
+        else:
+            print(f"  ✗ No bounds at index {idx}")
 
         if matching_bounds:
-            print(f"  Tile bounds: lat [{matching_bounds['south']:.6f}, {matching_bounds['north']:.6f}], lon [{matching_bounds['west']:.6f}, {matching_bounds['east']:.6f}]")
+            # No changes needed below this line
 
             # Check if all markers are within bounds
             markers_outside = 0
@@ -149,7 +148,7 @@ def parse_html():
     print("DETAILED EXAMPLE: First marker")
     print("="*70)
 
-    if markers:
+    if markers and sorted_tile_names and tile_bounds:
         m = markers[0]
         print(f"Marker:")
         print(f"  Tile: {m['tile']}")
@@ -158,31 +157,37 @@ def parse_html():
         print(f"  WGS84: ({m['lon']:.6f}°E, {m['lat']:.6f}°N)")
         print(f"  Daylight: {m['daylight']}h")
 
-        # Try to find its tile
-        for bounds in tile_bounds:
+        # Find the tile index
+        tile_idx = sorted_tile_names.index(m['tile']) if m['tile'] in sorted_tile_names else -1
+
+        if tile_idx >= 0 and tile_idx < len(tile_bounds):
+            bounds = tile_bounds[tile_idx]
+            print(f"\nMatched to tile bounds (index {tile_idx}):")
+            print(f"  Lat: [{bounds['south']:.6f}, {bounds['north']:.6f}]")
+            print(f"  Lon: [{bounds['west']:.6f}, {bounds['east']:.6f}]")
+
+            # Calculate position within tile (0=south/west, 1=north/east)
+            lat_pos = (m['lat'] - bounds['south']) / (bounds['north'] - bounds['south'])
+            lon_pos = (m['lon'] - bounds['west']) / (bounds['east'] - bounds['west'])
+
+            print(f"\nPosition within tile:")
+            print(f"  Lat: {lat_pos*100:.1f}% from south (0%) to north (100%)")
+            print(f"  Lon: {lon_pos*100:.1f}% from west (0%) to east (100%)")
+
+            # Check if within bounds
             if bounds['south'] <= m['lat'] <= bounds['north'] and bounds['west'] <= m['lon'] <= bounds['east']:
-                print(f"\nFound in tile bounds:")
-                print(f"  Lat: [{bounds['south']:.6f}, {bounds['north']:.6f}]")
-                print(f"  Lon: [{bounds['west']:.6f}, {bounds['east']:.6f}]")
-
-                # Calculate position within tile (0=south/west, 1=north/east)
-                lat_pos = (m['lat'] - bounds['south']) / (bounds['north'] - bounds['south'])
-                lon_pos = (m['lon'] - bounds['west']) / (bounds['east'] - bounds['west'])
-
-                print(f"\nPosition within tile:")
-                print(f"  Lat: {lat_pos*100:.1f}% from south (0%) to north (100%)")
-                print(f"  Lon: {lon_pos*100:.1f}% from west (0%) to east (100%)")
+                print(f"\n  ✓ Marker is WITHIN bounds")
 
                 if m['row'] == 0:
-                    print(f"\n  Row 0 should be at NORTH (100%), got {lat_pos*100:.1f}%")
+                    print(f"  Row 0 should be at NORTH (100%), got {lat_pos*100:.1f}%")
                     if lat_pos > 0.99:
                         print(f"  ✓ Correct!")
                     else:
                         print(f"  ✗ Wrong! Should be near 100%")
-
-                break
+            else:
+                print(f"\n  ✗ Marker is OUTSIDE bounds")
         else:
-            print(f"\n✗ Marker is NOT within any tile bounds!")
+            print(f"\n✗ Could not find tile bounds for tile {m['tile']}")
 
     print("\n" + "="*70)
 
