@@ -35,11 +35,23 @@ class SystemMonitor:
             total_memory = device.mem_info[1] / 1e9
             free_memory = device.mem_info[0] / 1e9
             used_memory = total_memory - free_memory
+            used_percent = (used_memory / total_memory) * 100
 
             logger.info(
-                f"GPU Memory: {used_memory:.1f}/{total_memory:.1f}GB ({(used_memory / total_memory) * 100:.1f}%)")
+                f"GPU Memory: {used_memory:.2f}/{total_memory:.1f}GB ({used_percent:.1f}%) | "
+                f"Free: {free_memory:.2f}GB")
         except Exception as e:
             logger.debug(f"Could not get GPU status: {e}")
+
+    @staticmethod
+    def get_gpu_free_memory_gb():
+        """Get free GPU memory in GB"""
+        try:
+            device = cp.cuda.Device()
+            free_memory = device.mem_info[0] / 1e9
+            return free_memory
+        except:
+            return 0
 
     @staticmethod
     def log_system_status():
@@ -232,7 +244,19 @@ class CuPySolarCalculator:
 
 
 class BatchProcessor:
-    """Batch processing manager"""
+    """Batch processing manager
+
+    Current architecture: Sequential tile processing within batches
+    - Processes tiles one at a time through all sun positions
+    - BATCH_SIZE controls memory cleanup frequency, not parallelism
+    - Low GPU utilization due to sequential processing
+
+    Future optimization potential:
+    - Load multiple tile elevations into GPU memory
+    - Process multiple tiles through sun positions in parallel
+    - Would require refactoring compute_shadows_gpu_cupy for batch processing
+    - Could achieve 10-20x better GPU utilization
+    """
 
     def __init__(self, asc_directory):
         self.asc_directory = asc_directory
@@ -285,18 +309,29 @@ class BatchProcessor:
                     logger.info(f"[{idx}/{total}] Processing {os.path.basename(asc_path)}")
                     start_time = time.time()
 
+                    # Log GPU memory before processing
+                    free_mem_before = SystemMonitor.get_gpu_free_memory_gb()
+
                     # Read data
                     elevation, header = OptimizedASCReader.read_data_fast(asc_path)
                     if elevation is None:
                         continue
+
+                    # Log tile size
+                    tile_size_mb = elevation.nbytes / (1024 * 1024)
+                    logger.info(f"  Tile size: {elevation.shape} = {tile_size_mb:.1f}MB")
 
                     # Compute shadows using CuPy
                     daylight_hours = self.gpu_calc.compute_shadows_gpu_cupy(
                         elevation, sun_positions, header['cellsize']
                     )
 
+                    # Log GPU memory usage
+                    free_mem_after = SystemMonitor.get_gpu_free_memory_gb()
+                    mem_used = free_mem_before - free_mem_after
+
                     elapsed = time.time() - start_time
-                    logger.info(f"[{idx}/{total}] Completed in {elapsed:.2f}s")
+                    logger.info(f"[{idx}/{total}] Completed in {elapsed:.2f}s | GPU used: {mem_used:.2f}GB")
 
                     # Store result
                     results.append({
@@ -311,7 +346,10 @@ class BatchProcessor:
             # Clear GPU memory after each batch
             cp.get_default_memory_pool().free_all_blocks()
 
-            # Log status
+            # Log batch completion status
+            batch_num = batch_start // batch_size + 1
+            total_batches = (total - 1) // batch_size + 1
+            logger.info(f"✓ Batch {batch_num}/{total_batches} complete")
             SystemMonitor.log_system_status()
             SystemMonitor.log_gpu_status()
 
@@ -397,9 +435,9 @@ def main():
             logger.error(f"Directory not found: {ASC_DIR}")
             return
 
-    # Parameters
+    # Parameters - Optimized for RTX 4090 24GB
     MAX_TILES = None  # Process ALL tiles (no limit)
-    BATCH_SIZE = 5  # Process 5 files at a time to manage memory
+    BATCH_SIZE = 30  # Process 30 tiles per batch (optimized for 24GB GPU)
 
     logger.info("=" * 60)
     logger.info("Solar Daylight Calculation with CuPy GPU Acceleration")
@@ -432,6 +470,28 @@ def main():
         create_visualization(results)
 
         logger.info("Processing complete!")
+
+        # Performance summary
+        tiles_per_second = len(results) / elapsed
+        logger.info(f"Performance: {tiles_per_second:.2f} tiles/second")
+
+        # Check GPU utilization and provide recommendations
+        final_gpu_status = SystemMonitor.get_gpu_free_memory_gb()
+        device = cp.cuda.Device()
+        total_gpu_gb = device.mem_info[1] / 1e9
+        used_gpu_gb = total_gpu_gb - final_gpu_status
+        utilization_percent = (used_gpu_gb / total_gpu_gb) * 100
+
+        logger.info(f"GPU Utilization: {utilization_percent:.1f}%")
+
+        if utilization_percent < 30:
+            recommended_batch = int(BATCH_SIZE * (30 / max(utilization_percent, 5)))
+            logger.info(f"⚠️  Low GPU utilization! Consider increasing BATCH_SIZE to {recommended_batch}")
+            logger.info(f"   Edit line {400} in compute.py: BATCH_SIZE = {recommended_batch}")
+        elif utilization_percent > 90:
+            logger.info(f"⚠️  High GPU memory usage. Current BATCH_SIZE={BATCH_SIZE} is near limit.")
+        else:
+            logger.info(f"✓ GPU utilization is good with BATCH_SIZE={BATCH_SIZE}")
 
         # Estimate time for all files
         if MAX_TILES and len(results) == MAX_TILES:
