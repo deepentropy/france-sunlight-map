@@ -155,7 +155,7 @@ def main():
 
         # Now calculate using pixel CENTERS (correct)
         print(f"\n" + "-"*70)
-        print("CORRECTED: Using pixel CENTERS")
+        print("CORRECTED: Using pixel CENTERS + ALL 4 CORNERS")
         print("-"*70)
 
         xmin_center = header['xllcorner'] + 0.5 * cellsize
@@ -165,21 +165,34 @@ def main():
 
         print(f"\nLambert93 pixel CENTERS (correct):")
         print(f"  SW: ({xmin_center}, {ymin_center})")
+        print(f"  SE: ({xmax_center}, {ymin_center})")
+        print(f"  NW: ({xmin_center}, {ymax_center})")
         print(f"  NE: ({xmax_center}, {ymax_center})")
 
+        # Transform ALL FOUR corners (projection is non-linear!)
         lon_sw, lat_sw = transformer.transform(xmin_center, ymin_center)
+        lon_se, lat_se = transformer.transform(xmax_center, ymin_center)
+        lon_nw, lat_nw = transformer.transform(xmin_center, ymax_center)
         lon_ne, lat_ne = transformer.transform(xmax_center, ymax_center)
 
-        print(f"\nWGS84 from pixel centers (correct):")
+        print(f"\nWGS84 from all four corners:")
         print(f"  SW: ({lon_sw:.6f}, {lat_sw:.6f})")
+        print(f"  SE: ({lon_se:.6f}, {lat_se:.6f})")
+        print(f"  NW: ({lon_nw:.6f}, {lat_nw:.6f})")
         print(f"  NE: ({lon_ne:.6f}, {lat_ne:.6f})")
 
-        south = min(lat_sw, lat_ne)
-        north = max(lat_sw, lat_ne)
-        west = min(lon_sw, lon_ne)
-        east = max(lon_sw, lon_ne)
+        # Find bounding box
+        all_lats = [lat_sw, lat_se, lat_nw, lat_ne]
+        all_lons = [lon_sw, lon_se, lon_nw, lon_ne]
 
-        print(f"\nNEW bounds (correct): [[{south:.6f}, {west:.6f}], [{north:.6f}, {east:.6f}]]")
+        south = min(all_lats)
+        north = max(all_lats)
+        west = min(all_lons)
+        east = max(all_lons)
+
+        print(f"\nNEW bounds (from all 4 corners): [[{south:.6f}, {west:.6f}], [{north:.6f}, {east:.6f}]]")
+        print(f"\nNote: Lambert93 → WGS84 is NON-LINEAR")
+        print(f"Same Y in Lambert93 can give different latitudes depending on X!")
 
         # Verify transformation is monotonic
         if lat_ne > lat_sw:

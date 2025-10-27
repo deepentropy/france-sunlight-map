@@ -59,19 +59,24 @@ class DaylightMapVisualizer:
                 xmax = header['xllcorner'] + (header['ncols'] - 0.5) * cellsize
                 ymax = header['yllcorner'] + (header['nrows'] - 0.5) * cellsize
 
-                # Transform pixel centers to WGS84 (lat/lon)
-                # Southwest pixel center
-                lon_sw, lat_sw = self.transformer.transform(xmin, ymin)
-                # Northeast pixel center
-                lon_ne, lat_ne = self.transformer.transform(xmax, ymax)
+                # IMPORTANT: Lambert93 → WGS84 is a NON-LINEAR projection
+                # A rectangle in Lambert93 becomes a warped quadrilateral in WGS84
+                # We must transform ALL FOUR corners and find the bounding box
 
-                # Folium expects bounds as: [[south, west], [north, east]]
-                # south = min latitude, north = max latitude
-                # west = min longitude, east = max longitude
-                south = min(lat_sw, lat_ne)
-                north = max(lat_sw, lat_ne)
-                west = min(lon_sw, lon_ne)
-                east = max(lon_sw, lon_ne)
+                # Transform all four corners
+                lon_sw, lat_sw = self.transformer.transform(xmin, ymin)  # Southwest
+                lon_se, lat_se = self.transformer.transform(xmax, ymin)  # Southeast
+                lon_nw, lat_nw = self.transformer.transform(xmin, ymax)  # Northwest
+                lon_ne, lat_ne = self.transformer.transform(xmax, ymax)  # Northeast
+
+                # Find bounding box that contains all four corners
+                all_lats = [lat_sw, lat_se, lat_nw, lat_ne]
+                all_lons = [lon_sw, lon_se, lon_nw, lon_ne]
+
+                south = min(all_lats)
+                north = max(all_lats)
+                west = min(all_lons)
+                east = max(all_lons)
 
                 self.metadata[basename] = {
                     'header': header,
