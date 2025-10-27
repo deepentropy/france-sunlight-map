@@ -47,9 +47,9 @@ def parse_html():
     # Extract image overlays with their bounds
     print("\nExtracting tile bounds...")
 
-    # Look for ImageOverlay with bounds
-    # Pattern: bounds: [[south, west], [north, east]]
-    bounds_pattern = r'bounds:\s*\[\[\s*([\d.]+),\s*([\d.]+)\s*\],\s*\[\s*([\d.]+),\s*([\d.]+)\s*\]\]'
+    # Pattern: [[south, west], [north, east]]
+    # The coordinates appear directly in the imageOverlay calls
+    bounds_pattern = r'\[\[\s*([\d.]+),\s*([\d.]+)\s*\],\s*\[\s*([\d.]+),\s*([\d.]+)\s*\]\]'
 
     tile_bounds = []
     for match in re.finditer(bounds_pattern, content):
