@@ -7,6 +7,8 @@ import numpy as np
 from pathlib import Path
 from typing import Union, List
 
+from tqdm import tqdm
+
 
 def save_all_asc_to_single_npy(
     input_path: Union[str, List[str]],
@@ -37,7 +39,7 @@ def save_all_asc_to_single_npy(
 
     # Read all files
     arrays = []
-    for asc_file in asc_files:
+    for asc_file in tqdm(asc_files):
         # Skip header lines (usually 6 lines)
         data = np.loadtxt(asc_file, skiprows=6, dtype='float32')
 
@@ -50,6 +52,6 @@ def save_all_asc_to_single_npy(
     stacked = np.stack(arrays, axis=0)
 
     # Save
-    np.save(output_npy, stacked)
+    np.savez_compressed(output_npy, stacked)
 
     return stacked
