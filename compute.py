@@ -294,11 +294,11 @@ class BatchProcessor:
                         date=None, batch_size=50, chunk_size=1000, pixel_size=5.0,
                         lat_center=46.0, lon_center=2.0):
         """
-        Process elevation data from merged NPZ file using memory mapping.
+        Process elevation data from merged NPY/NPZ file using memory mapping.
         Handles files larger than RAM by processing in chunks.
 
         Args:
-            input_npz: Input NPZ file containing merged elevation data
+            input_npz: Input NPY or NPZ file containing merged elevation data
             output_npz: Output NPZ file for daylight results
             date: Date for sun position calculations
             batch_size: Number of tiles to process in parallel on GPU
@@ -315,9 +315,16 @@ class BatchProcessor:
         logger.info(f"Opening elevation data from {input_npz} (memory-mapped)")
 
         # Open with memory mapping - doesn't load into RAM
-        npz_file = np.load(input_npz, mmap_mode='r')
-        key = list(npz_file.keys())[0]
-        elevation_data = npz_file[key]
+        # Handle both .npy and .npz files
+        loaded = np.load(input_npz, mmap_mode='r')
+
+        if isinstance(loaded, np.ndarray):
+            # It's a .npy file - already a memmap array
+            elevation_data = loaded
+        else:
+            # It's a .npz file - get first array
+            key = list(loaded.keys())[0]
+            elevation_data = loaded[key]
 
         total = len(elevation_data)
         shape = elevation_data.shape
@@ -420,7 +427,9 @@ class BatchProcessor:
 
         # Close memory-mapped arrays
         del daylight_mmap
-        npz_file.close()
+        if not isinstance(loaded, np.ndarray):
+            # Close NPZ file if it was opened
+            loaded.close()
 
         # Compress final output
         logger.info(f"\n{'='*60}")
@@ -630,7 +639,7 @@ def main():
     """Main execution"""
 
     # Configuration
-    INPUT_NPZ = "merged.npz"  # Merged elevation data
+    INPUT_NPZ = "merged.npy"  # Merged elevation data (can be .npy or .npz)
     OUTPUT_NPZ = "daylight_results.npz"  # Output daylight results
     BATCH_SIZE = 240  # Process tiles in parallel on GPU (optimized for RTX 4090 24GB)
     CHUNK_SIZE = 1000  # Number of tiles to load into RAM at once (adjust based on available RAM)

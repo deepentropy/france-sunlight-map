@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Example: Compute daylight hours from merged NPZ elevation data.
+Example: Compute daylight hours from merged NPY/NPZ elevation data.
 
 Handles files larger than RAM using memory mapping and chunk processing.
 
 Usage:
-    python3 compute_daylight_npz.py merged.npz daylight.npz
-    python3 compute_daylight_npz.py merged.npz daylight.npz --chunk-size 500
+    python3 compute_daylight_npz.py merged.npy daylight.npz
+    python3 compute_daylight_npz.py merged.npy daylight.npz --chunk-size 500
 """
 
 import sys
@@ -19,12 +19,12 @@ def compute_daylight(input_npz, output_npz="daylight_results.npz",
                      batch_size=240, chunk_size=1000, pixel_size=5.0,
                      lat_center=46.0, lon_center=2.0):
     """
-    Compute daylight hours from merged NPZ elevation file.
+    Compute daylight hours from merged NPY/NPZ elevation file.
 
     Uses memory mapping to handle files larger than available RAM.
 
     Args:
-        input_npz: Input NPZ file with merged elevation data
+        input_npz: Input NPY or NPZ file with merged elevation data
         output_npz: Output NPZ file for daylight results
         batch_size: Number of tiles to process in parallel on GPU
         chunk_size: Number of tiles to load into RAM at once
@@ -51,21 +51,21 @@ def compute_daylight(input_npz, output_npz="daylight_results.npz",
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Compute daylight hours from merged NPZ elevation data",
+        description="Compute daylight hours from merged NPY/NPZ elevation data",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Basic usage (default chunk_size=1000 for 64GB RAM)
-  python3 compute_daylight_npz.py merged.npz daylight.npz
+  python3 compute_daylight_npz.py merged.npy daylight.npz
 
   # Reduce chunk size for lower RAM (e.g., 32GB RAM)
-  python3 compute_daylight_npz.py merged.npz daylight.npz --chunk-size 500
+  python3 compute_daylight_npz.py merged.npy daylight.npz --chunk-size 500
 
   # Increase chunk size for more RAM (e.g., 128GB RAM)
-  python3 compute_daylight_npz.py merged.npz daylight.npz --chunk-size 2000
+  python3 compute_daylight_npz.py merged.npy daylight.npz --chunk-size 2000
 
   # Adjust batch size for GPU memory
-  python3 compute_daylight_npz.py merged.npz daylight.npz --batch-size 100
+  python3 compute_daylight_npz.py merged.npy daylight.npz --batch-size 100
 
 Memory guidelines:
   - chunk_size=1000 tiles ≈ 15-20 GB RAM (suitable for 64GB total RAM)
@@ -76,7 +76,7 @@ Memory guidelines:
         """
     )
 
-    parser.add_argument("input_npz", help="Input NPZ file with merged elevation data")
+    parser.add_argument("input_npz", help="Input NPY or NPZ file with merged elevation data")
     parser.add_argument("output_npz", nargs="?", default="daylight_results.npz",
                        help="Output NPZ file for daylight results (default: daylight_results.npz)")
     parser.add_argument("--batch-size", type=int, default=240,
