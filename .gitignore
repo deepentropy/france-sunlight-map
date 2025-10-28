@@ -2,4 +2,6 @@
 .ipynb_checkpoints
 daylight_results/
 RGEALTI/
-.idea/
+*.log
+*.html
+/.idea
