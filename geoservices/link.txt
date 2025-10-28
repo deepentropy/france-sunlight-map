@@ -1,0 +1,8 @@
+https://geoservices.ign.fr/telechargement-api/RGEALTI?page=0
+https://geoservices.ign.fr/telechargement-api/RGEALTI?page=1
+https://geoservices.ign.fr/telechargement-api/RGEALTI?page=2
+https://geoservices.ign.fr/telechargement-api/RGEALTI?page=3
+https://geoservices.ign.fr/telechargement-api/RGEALTI?page=4
+
+
+<li role="menuitem"><a href="https://data.geopf.fr/telechargement/download/RGEALTI/RGEALTI_2-0_1M_ASC_LAMB93-IGN69_D001_2023-08-08/RGEALTI_2-0_1M_ASC_LAMB93-IGN69_D001_2023-08-08.7z.001" formnovalidate="formnovalidate" id="dropdown-item-1loq5ve0muc" class="hidden">Téléchargement 1/3</a></li><li role="menuitem"><a href="https://data.geopf.fr/telechargement/download/RGEALTI/RGEALTI_2-0_1M_ASC_LAMB93-IGN69_D001_2023-08-08/RGEALTI_2-0_1M_ASC_LAMB93-IGN69_D001_2023-08-08.7z.002" formnovalidate="formnovalidate" id="ajax-link-fwtfl4z6vio">Téléchargement 2/3</a></li><li role="menuitem"><a href="https://data.geopf.fr/telechargement/download/RGEALTI/RGEALTI_2-0_1M_ASC_LAMB93-IGN69_D001_2023-08-08/RGEALTI_2-0_1M_ASC_LAMB93-IGN69_D001_2023-08-08.md5" formnovalidate="formnovalidate" id="ajax-link-x2b5jhg3pzu">Téléchargement 3/3</a></li>
