@@ -291,35 +291,48 @@ class BatchProcessor:
         self.gpu_calc = CuPySolarCalculator()
 
     def process_from_npz(self, input_npz, output_npz="daylight_results.npz",
-                        date=None, batch_size=50, pixel_size=5.0,
+                        date=None, batch_size=50, chunk_size=1000, pixel_size=5.0,
                         lat_center=46.0, lon_center=2.0):
         """
-        Process elevation data from merged NPZ file and save daylight to NPZ
+        Process elevation data from merged NPZ file using memory mapping.
+        Handles files larger than RAM by processing in chunks.
 
         Args:
             input_npz: Input NPZ file containing merged elevation data
             output_npz: Output NPZ file for daylight results
             date: Date for sun position calculations
-            batch_size: Number of tiles to process in parallel
+            batch_size: Number of tiles to process in parallel on GPU
+            chunk_size: Number of tiles to load into RAM at once (default: 1000)
             pixel_size: Cell size in meters
             lat_center: Latitude of center point
             lon_center: Longitude of center point
 
         Returns:
-            Daylight results array
+            None (saves directly to file)
         """
         date = date or datetime(2024, 6, 21)
 
-        logger.info(f"Loading elevation data from {input_npz}")
-        with np.load(input_npz) as data:
-            # Get first array from NPZ
-            key = list(data.keys())[0]
-            elevation_data = data[key]
+        logger.info(f"Opening elevation data from {input_npz} (memory-mapped)")
+
+        # Open with memory mapping - doesn't load into RAM
+        npz_file = np.load(input_npz, mmap_mode='r')
+        key = list(npz_file.keys())[0]
+        elevation_data = npz_file[key]
 
         total = len(elevation_data)
-        logger.info(f"Loaded {total} tiles from NPZ file")
-        logger.info(f"Shape: {elevation_data.shape}")
-        logger.info(f"Processing in batches of {batch_size}")
+        shape = elevation_data.shape
+        logger.info(f"File contains {total} tiles")
+        logger.info(f"Shape: {shape}")
+        logger.info(f"Data size: {elevation_data.nbytes / 1e9:.2f} GB")
+        logger.info(f"Processing in chunks of {chunk_size} tiles (batch_size={batch_size})")
+
+        # Create temporary output file using memmap (uncompressed)
+        temp_output = output_npz.replace('.npz', '_temp.npy')
+        logger.info(f"Creating temporary output file: {temp_output}")
+
+        # Create memory-mapped output array
+        output_shape = shape  # Same shape as input
+        daylight_mmap = np.memmap(temp_output, dtype='float32', mode='w+', shape=output_shape)
 
         # Pre-calculate sun positions
         logger.info(f"Center coordinates: {lat_center:.4f}°N, {lon_center:.4f}°E")
@@ -334,54 +347,103 @@ class BatchProcessor:
         )
         sun_positions = list(zip(elevations, azimuths))
 
-        # Process in batches
-        all_daylight = []
-        total_batches = (total + batch_size - 1) // batch_size
+        # Process in chunks
+        total_chunks = (total + chunk_size - 1) // chunk_size
 
-        for batch_num in range(total_batches):
-            batch_start = batch_num * batch_size
-            batch_end = min(batch_start + batch_size, total)
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Starting chunk processing: {total_chunks} chunks")
+        logger.info(f"{'='*60}\n")
+
+        for chunk_num in range(total_chunks):
+            chunk_start = chunk_num * chunk_size
+            chunk_end = min(chunk_start + chunk_size, total)
+            chunk_tiles = chunk_end - chunk_start
 
             logger.info(f"\n{'='*60}")
-            logger.info(f"Batch {batch_num + 1}/{total_batches}: Processing tiles {batch_start + 1}-{batch_end}")
+            logger.info(f"CHUNK {chunk_num + 1}/{total_chunks}: Tiles {chunk_start + 1}-{chunk_end} ({chunk_tiles} tiles)")
             logger.info(f"{'='*60}")
 
-            batch_start_time = time.time()
+            chunk_start_time = time.time()
 
-            # Extract batch
-            elevation_batch = [elevation_data[i] for i in range(batch_start, batch_end)]
+            # Load chunk into RAM
+            logger.info(f"Loading chunk into RAM...")
+            elevation_chunk = elevation_data[chunk_start:chunk_end]
+            logger.info(f"Chunk loaded: {elevation_chunk.shape}, {elevation_chunk.nbytes / 1e9:.2f} GB")
 
-            # Process on GPU
-            SystemMonitor.log_gpu_status()
-            daylight_batch = self.gpu_calc.compute_shadows_batch_gpu(
-                elevation_batch, sun_positions, pixel_size
-            )
+            # Process chunk in batches
+            total_batches = (chunk_tiles + batch_size - 1) // batch_size
+            chunk_results = []
 
-            all_daylight.extend(daylight_batch)
+            for batch_num in range(total_batches):
+                batch_start = batch_num * batch_size
+                batch_end = min(batch_start + batch_size, chunk_tiles)
 
-            batch_elapsed = time.time() - batch_start_time
-            tiles_per_sec = len(elevation_batch) / batch_elapsed
-            logger.info(f"✓ Batch {batch_num + 1}/{total_batches} complete: {len(elevation_batch)} tiles in {batch_elapsed:.2f}s ({tiles_per_sec:.2f} tiles/s)")
+                logger.info(f"  Batch {batch_num + 1}/{total_batches}: Processing tiles {batch_start + 1}-{batch_end}")
 
-            # Clear memory
-            del elevation_batch
-            del daylight_batch
-            cp.get_default_memory_pool().free_all_blocks()
+                batch_start_time = time.time()
 
-            SystemMonitor.log_gpu_status()
+                # Extract batch from chunk
+                elevation_batch = [elevation_chunk[i] for i in range(batch_start, batch_end)]
 
-        # Stack and save results
+                # Process on GPU
+                SystemMonitor.log_gpu_status()
+                daylight_batch = self.gpu_calc.compute_shadows_batch_gpu(
+                    elevation_batch, sun_positions, pixel_size
+                )
+
+                chunk_results.extend(daylight_batch)
+
+                batch_elapsed = time.time() - batch_start_time
+                tiles_per_sec = len(elevation_batch) / batch_elapsed
+                logger.info(f"  ✓ Batch {batch_num + 1}/{total_batches} complete: {len(elevation_batch)} tiles in {batch_elapsed:.2f}s ({tiles_per_sec:.2f} tiles/s)")
+
+                # Clear GPU memory
+                del elevation_batch
+                del daylight_batch
+                cp.get_default_memory_pool().free_all_blocks()
+
+            # Write chunk results to memory-mapped file
+            logger.info(f"Writing chunk results to disk...")
+            chunk_results_array = np.array(chunk_results, dtype='float32')
+            daylight_mmap[chunk_start:chunk_end] = chunk_results_array
+            daylight_mmap.flush()  # Ensure data is written to disk
+
+            chunk_elapsed = time.time() - chunk_start_time
+            logger.info(f"✓ Chunk {chunk_num + 1}/{total_chunks} complete in {chunk_elapsed:.2f}s")
+
+            # Clear RAM
+            del elevation_chunk
+            del chunk_results
+            del chunk_results_array
+
+            SystemMonitor.log_system_status()
+
+        # Close memory-mapped arrays
+        del daylight_mmap
+        npz_file.close()
+
+        # Compress final output
         logger.info(f"\n{'='*60}")
-        logger.info(f"Saving results to {output_npz}")
+        logger.info(f"Compressing results to {output_npz}")
         logger.info(f"{'='*60}")
 
-        daylight_array = np.stack(all_daylight, axis=0)
-        np.savez_compressed(output_npz, daylight_array)
+        # Load and compress in chunks to avoid RAM issues
+        logger.info(f"Loading temporary file for compression...")
+        temp_data = np.load(temp_output, mmap_mode='r')
+        logger.info(f"Saving compressed NPZ...")
+        np.savez_compressed(output_npz, temp_data)
 
-        logger.info(f"✓ Saved daylight data: {daylight_array.shape}")
-        logger.info(f"✓ File: {output_npz}")
+        # Clean up temporary file
+        logger.info(f"Removing temporary file...")
+        os.remove(temp_output)
 
-        return daylight_array
+        logger.info(f"\n{'='*60}")
+        logger.info(f"✓ Processing complete!")
+        logger.info(f"✓ Processed {total} tiles")
+        logger.info(f"✓ Output saved to: {output_npz}")
+        logger.info(f"{'='*60}")
+
+        return None
 
     def process_all(self, date=None, max_tiles=None, batch_size=50):
         """
@@ -570,7 +632,8 @@ def main():
     # Configuration
     INPUT_NPZ = "merged.npz"  # Merged elevation data
     OUTPUT_NPZ = "daylight_results.npz"  # Output daylight results
-    BATCH_SIZE = 240  # Process tiles in parallel (optimized for RTX 4090 24GB)
+    BATCH_SIZE = 240  # Process tiles in parallel on GPU (optimized for RTX 4090 24GB)
+    CHUNK_SIZE = 1000  # Number of tiles to load into RAM at once (adjust based on available RAM)
     PIXEL_SIZE = 5.0  # Cell size in meters
     LAT_CENTER = 46.0  # Latitude of center point
     LON_CENTER = 2.0   # Longitude of center point
@@ -585,7 +648,8 @@ def main():
     logger.info("Solar Daylight Calculation - GPU Parallel Batch Processing")
     logger.info(f"Input: {INPUT_NPZ}")
     logger.info(f"Output: {OUTPUT_NPZ}")
-    logger.info(f"Batch size: {BATCH_SIZE} tiles processed in parallel")
+    logger.info(f"Batch size: {BATCH_SIZE} tiles (GPU parallel processing)")
+    logger.info(f"Chunk size: {CHUNK_SIZE} tiles (RAM management)")
     logger.info("=" * 60)
 
     # Log system status
@@ -594,13 +658,14 @@ def main():
     # Create processor
     processor = BatchProcessor()
 
-    # Process from NPZ
+    # Process from NPZ with memory mapping
     start_time = time.time()
-    daylight_data = processor.process_from_npz(
+    processor.process_from_npz(
         input_npz=INPUT_NPZ,
         output_npz=OUTPUT_NPZ,
         date=datetime(2024, 6, 21),
         batch_size=BATCH_SIZE,
+        chunk_size=CHUNK_SIZE,
         pixel_size=PIXEL_SIZE,
         lat_center=LAT_CENTER,
         lon_center=LON_CENTER
@@ -608,13 +673,7 @@ def main():
     elapsed = time.time() - start_time
 
     logger.info(f"\nTotal processing time: {elapsed / 60:.2f} minutes ({elapsed:.1f}s)")
-
-    if daylight_data is not None:
-        # Performance summary
-        num_tiles = len(daylight_data)
-        tiles_per_second = num_tiles / elapsed
-        logger.info(f"Performance: {tiles_per_second:.2f} tiles/second")
-        logger.info(f"✓ Processing complete! {num_tiles} tiles processed successfully")
+    logger.info(f"✓ Processing complete!")
 
 
 if __name__ == "__main__":
