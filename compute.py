@@ -232,7 +232,8 @@ class CuPySolarCalculator:
                 # Use provided max_shadow_distance, but cap at tile dimensions
                 max_dist = min(max_shadow_distance, min(height, width) // 2)
 
-                if d == 1 and processed == 1:  # Log once
+                # Log shadow distance once
+                if processed == 1:
                     logger.info(f"  Shadow tracing distance: {max_dist} pixels ({max_dist * pixel_size:.0f}m)")
 
                 for d in range(1, max_dist):
