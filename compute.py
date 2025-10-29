@@ -161,7 +161,7 @@ class CuPySolarCalculator:
 
         return np.degrees(elevations), np.degrees(azimuths)
 
-    def compute_shadows_batch_gpu(self, elevation_batch, sun_positions, pixel_size=5.0):
+    def compute_shadows_batch_gpu(self, elevation_batch, sun_positions, pixel_size=5.0, max_shadow_distance=100):
         """
         Compute shadows for MULTIPLE tiles in parallel on GPU
 
@@ -175,6 +175,8 @@ class CuPySolarCalculator:
             elevation_batch: List of elevation arrays [(H,W), (H,W), ...]
             sun_positions: List of (elevation, azimuth) tuples
             pixel_size: Cell size in meters
+            max_shadow_distance: Maximum distance to trace shadows in pixels (default: 100)
+                                For 5m resolution: 100px=500m, 500px=2.5km, 2000px=10km
 
         Returns:
             List of daylight hour arrays
@@ -227,7 +229,11 @@ class CuPySolarCalculator:
                 shadows_stack[cp.isnan(elevation_stack)] = 0
 
                 # Compute shadows - vectorized across all tiles
-                max_dist = min(100, min(height, width) // 2)
+                # Use provided max_shadow_distance, but cap at tile dimensions
+                max_dist = min(max_shadow_distance, min(height, width) // 2)
+
+                if d == 1 and processed == 1:  # Log once
+                    logger.info(f"  Shadow tracing distance: {max_dist} pixels ({max_dist * pixel_size:.0f}m)")
 
                 for d in range(1, max_dist):
                     # Source positions (broadcast to all tiles)

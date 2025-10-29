@@ -175,7 +175,12 @@ def process_all_tiles_with_neighbors(
         pixel_size: Cell size in meters
         lat_center: Latitude of center
         lon_center: Longitude of center
-        overlap: Pixels to load from neighbors (default: 100 = 500m at 5m resolution)
+        overlap: Pixels to load from neighbors AND maximum shadow tracing distance
+                 At 5m resolution:
+                 - 100px = 500m (default, good for flat terrain)
+                 - 500px = 2.5km (hilly terrain)
+                 - 1000px = 5km (mountainous)
+                 - 2000px = 10km (high mountains like Alps, Corsica)
         max_tiles: Maximum tiles to process (for testing)
     """
     from pathlib import Path
@@ -237,8 +242,9 @@ def process_all_tiles_with_neighbors(
             )
 
             # Process extended tile on GPU
+            # Use overlap as max_shadow_distance to utilize full loaded context
             daylight_extended = gpu_calc.compute_shadows_batch_gpu(
-                [extended_tile], sun_positions, pixel_size
+                [extended_tile], sun_positions, pixel_size, max_shadow_distance=overlap
             )[0]
 
             # Extract center region (original tile)
@@ -281,17 +287,23 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process all tiles
+  # Process all tiles (default: 500m shadow distance)
   python3 process_asc_with_neighbors.py asc_spatial_index.pkl
 
-  # Process with custom overlap (for longer shadow distances)
-  python3 process_asc_with_neighbors.py asc_spatial_index.pkl --overlap 200
+  # Mountainous terrain like Corsica (10km shadow distance)
+  python3 process_asc_with_neighbors.py asc_spatial_index.pkl --overlap 2000
 
   # Test with first 10 tiles
-  python3 process_asc_with_neighbors.py asc_spatial_index.pkl --max-tiles 10
+  python3 process_asc_with_neighbors.py asc_spatial_index.pkl --max-tiles 10 --overlap 2000
 
-  # Custom output directory
-  python3 process_asc_with_neighbors.py asc_spatial_index.pkl --output-dir results/
+  # Alps/Pyrenees (5km shadow distance)
+  python3 process_asc_with_neighbors.py asc_spatial_index.pkl --overlap 1000
+
+Shadow distance guide (at 5m resolution):
+  --overlap 100  =  500m   (flat terrain)
+  --overlap 500  = 2.5km   (hilly)
+  --overlap 1000 =   5km   (mountains)
+  --overlap 2000 =  10km   (high mountains)
         """
     )
 
@@ -310,7 +322,8 @@ Examples:
         "--overlap",
         type=int,
         default=100,
-        help="Neighbor overlap in pixels (default: 100 = 500m at 5m resolution)"
+        help="Shadow search distance in pixels. Also loads this much from neighbors. "
+             "(default: 100=500m, use 2000=10km for Corsica/high mountains)"
     )
 
     parser.add_argument(
