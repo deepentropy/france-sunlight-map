@@ -79,7 +79,7 @@ Memory guidelines:
     parser.add_argument("input_npz", help="Input NPY or NPZ file with merged elevation data")
     parser.add_argument("output_npz", nargs="?", default="daylight_results.npz",
                        help="Output NPZ file for daylight results (default: daylight_results.npz)")
-    parser.add_argument("--batch-size", type=int, default=240,
+    parser.add_argument("--batch-size", type=int, default=480,
                        help="Number of tiles to process in parallel on GPU (default: 240)")
     parser.add_argument("--chunk-size", type=int, default=1000,
                        help="Number of tiles to load into RAM at once (default: 1000)")
