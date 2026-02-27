@@ -497,6 +497,18 @@ def write_viewer_html(
     H, W = encoded["summer"].shape
     inv_luts_js = json.dumps(inv_luts)
 
+    # Stats for banner
+    n_pixels = int(np.count_nonzero(encoded["summer"] > 0))
+    area_km2 = n_pixels * (DOWNSAMPLE * 5) ** 2 / 1e6
+    s_med = inv_luts["summer"][128]
+    w_med = inv_luts["winter"][128]
+
+    # Embed logo as base64
+    logo_path = Path(__file__).parent / "logo.png"
+    logo_b64 = ""
+    if logo_path.exists():
+        logo_b64 = base64.b64encode(logo_path.read_bytes()).decode()
+
     # Gzip raw band bytes
     raw = encoded["summer"].tobytes() + encoded["winter"].tobytes()
     compressed = gzip.compress(raw, compresslevel=9)
@@ -539,19 +551,38 @@ def write_viewer_html(
     center_lon = (lon_min + lon_max) / 2
 
     html = f"""<!DOCTYPE html>
-<html><head>
+<html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Effective Sunlight - France</title>
+<title>France Sunlight Map - Terrain-Aware Solar Hours</title>
+<meta name="description" content="Interactive map of effective sunlight hours across France, computed from 5m DEM terrain data with GPU-accelerated horizon analysis. Compare summer and winter solstice exposure for any location.">
+<meta name="keywords" content="France, sunlight, solar hours, terrain, DEM, map, solstice, horizon, shadow, Alps, Pyrenees">
+<meta property="og:title" content="France Sunlight Map">
+<meta property="og:description" content="How many hours of sunlight does your location really get? Interactive terrain-aware solar map of France.">
+<meta property="og:type" content="website">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
-  body {{ margin:0; padding:0; }}
-  #map {{ position:absolute; top:0; bottom:0; width:100%; }}
+  body {{ margin:0; padding:0; font-family:sans-serif; }}
+  #banner {{
+    position:fixed; top:0; left:0; right:0; z-index:10000; height:48px;
+    background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);
+    display:flex; align-items:center; padding:0 16px; gap:12px;
+    box-shadow:0 2px 8px rgba(0,0,0,0.3);
+  }}
+  #banner img {{ height:32px; }}
+  #banner h1 {{ color:white; font-size:16px; margin:0; font-weight:600; white-space:nowrap; }}
+  #banner .stats {{
+    display:flex; gap:16px; margin-left:auto; color:rgba(255,255,255,0.85); font-size:12px;
+  }}
+  #banner .stat {{ text-align:center; }}
+  #banner .stat-val {{ font-size:15px; font-weight:700; color:white; }}
+  #banner .stat-lbl {{ font-size:10px; text-transform:uppercase; letter-spacing:0.5px; opacity:0.7; }}
+  #map {{ position:absolute; top:48px; bottom:0; width:100%; }}
   #controls {{
-    position:fixed; top:10px; right:10px; z-index:9999;
+    position:fixed; top:58px; right:10px; z-index:9999;
     background:white; padding:12px 16px; border-radius:8px;
-    box-shadow:0 2px 8px rgba(0,0,0,0.3); font-family:sans-serif; font-size:13px;
+    box-shadow:0 2px 8px rgba(0,0,0,0.3); font-size:13px;
     min-width:220px;
   }}
   #controls label {{ font-weight:bold; display:block; margin-bottom:6px; }}
@@ -560,15 +591,33 @@ def write_viewer_html(
   #legend {{
     position:fixed; bottom:30px; left:30px; z-index:9999;
     background:white; padding:10px; border-radius:5px;
-    box-shadow:0 0 5px rgba(0,0,0,0.3); font-family:sans-serif; font-size:12px;
+    box-shadow:0 0 5px rgba(0,0,0,0.3); font-size:12px;
   }}
   #loading {{
     position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
     z-index:99999; background:white; padding:20px 30px; border-radius:8px;
-    box-shadow:0 2px 12px rgba(0,0,0,0.3); font-family:sans-serif; font-size:16px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.3); font-size:16px;
+  }}
+  @media (max-width:600px) {{
+    #banner .stats {{ gap:8px; }}
+    #banner .stat-val {{ font-size:13px; }}
+    #banner h1 {{ font-size:14px; }}
   }}
 </style>
 </head><body>
+
+<div id="banner">
+  <img src="data:image/png;base64,{logo_b64}" alt="Logo">
+  <h1>France Sunlight Map</h1>
+  <div class="stats">
+    <div class="stat"><div class="stat-val">{n_pixels / 1e6:.1f}M</div><div class="stat-lbl">Points</div></div>
+    <div class="stat"><div class="stat-val">{area_km2 / 1e3:.0f}k km&sup2;</div><div class="stat-lbl">Coverage</div></div>
+    <div class="stat"><div class="stat-val">{s_med:.1f}h</div><div class="stat-lbl">Summer med.</div></div>
+    <div class="stat"><div class="stat-val">{w_med:.1f}h</div><div class="stat-lbl">Winter med.</div></div>
+    <div class="stat"><div class="stat-val">200m</div><div class="stat-lbl">Resolution</div></div>
+  </div>
+</div>
+
 <div id="map"></div>
 <div id="loading">Loading sunlight data...</div>
 

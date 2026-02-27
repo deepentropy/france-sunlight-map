@@ -1,8 +1,10 @@
-# Sunlight Extractor
+<p align="center">
+  <img src="logo.png" alt="France Sunlight Map" width="200">
+</p>
+
+# France Sunlight Map
 
 GPU-accelerated terrain sunlight computation for France. Computes effective sunlight hours by combining a 5m DEM with horizon-angle analysis and solar position modelling, then produces an interactive map viewer.
-
-![Summer solstice sunlight map](https://raw.githubusercontent.com/houseofai/sunlight-extractor/gh-pages/screenshot_summer_14h.png)
 
 ## How it works
 
