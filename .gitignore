@@ -10,6 +10,6 @@ data/
 *.tif
 *.lock
 /.idea
-rgealti_links.txt
+geoservices/page_links.txt
 /npy
 screenshot_*.png
