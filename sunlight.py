@@ -410,8 +410,9 @@ def save_geotiff(
     sunlight: dict[str, np.ndarray],
     grid: np.ndarray,
     meta: dict,
-) -> tuple[float, float, dict]:
-    """Save sunlight as 2-band tiled GeoTIFF: band1=summer, band2=winter (uint8)."""
+) -> tuple[dict, dict, dict]:
+    """Save sunlight as 2-band tiled GeoTIFF: band1=summer, band2=winter (uint8).
+    Each band uses its own p1-p99 percentile range for better contrast."""
     print("\n=== Saving GeoTIFF ===")
 
     nodata_mask = np.isnan(grid)
@@ -425,16 +426,19 @@ def save_geotiff(
     for label in sunlight:
         sunlight_wgs[label], _ = reproject_to_wgs84(sunlight[label], meta)
 
-    # Global value range for uint8 encoding
     valid_mask = ~np.isnan(grid_wgs)
-    all_vals = np.concatenate([sunlight_wgs[k][valid_mask] for k in sunlight_wgs])
-    vmin, vmax = float(np.nanmin(all_vals)), float(np.nanmax(all_vals))
-    print(f"  Value range: {vmin:.1f} - {vmax:.1f} hours")
 
-    # Encode to uint8: 0=nodata, 1-255=scaled hours
+    # Per-season percentile-based scaling for better contrast
     H, W = grid_wgs.shape
     encoded = {}
+    vranges = {}
     for label in ["summer", "winter"]:
+        vals = sunlight_wgs[label][valid_mask]
+        vmin = float(np.percentile(vals, 1))
+        vmax = float(np.percentile(vals, 99))
+        vranges[label] = (vmin, vmax)
+        print(f"  {label}: p1={vmin:.1f}h, p99={vmax:.1f}h")
+
         data = sunlight_wgs[label]
         nd = np.isnan(data)
         safe = np.nan_to_num(data, nan=vmin)
@@ -463,20 +467,22 @@ def save_geotiff(
 
     size_mb = os.path.getsize(OUTPUT_TIFF) / 1e6
     print(f"  Saved: {OUTPUT_TIFF} ({size_mb:.1f} MB)")
-    return encoded, vmin, vmax, wgs_meta
+    return encoded, vranges, wgs_meta
 
 
 def write_viewer_html(
     encoded: dict[str, np.ndarray],
-    vmin: float, vmax: float, wgs_meta: dict,
+    vranges: dict[str, tuple[float, float]], wgs_meta: dict,
 ) -> None:
     """Write standalone HTML viewer with embedded gzipped band data."""
     import gzip
     print("\n=== Writing HTML viewer ===")
 
     H, W = encoded["summer"].shape
+    s_vmin, s_vmax = vranges["summer"]
+    w_vmin, w_vmax = vranges["winter"]
 
-    # Gzip raw band bytes (much smaller than base64-encoding the full GeoTIFF)
+    # Gzip raw band bytes
     raw = encoded["summer"].tobytes() + encoded["winter"].tobytes()
     compressed = gzip.compress(raw, compresslevel=9)
     data_b64 = base64.b64encode(compressed).decode()
@@ -487,7 +493,7 @@ def write_viewer_html(
     lut = []
     for i in range(256):
         if i == 0:
-            lut.append([0, 0, 0, 0])  # nodata = transparent
+            lut.append([0, 0, 0, 0])
         else:
             t = (i - 1) / 254.0
             r, g, b, _ = cmap(t)
@@ -541,16 +547,16 @@ def write_viewer_html(
     <option value="winter">Winter Solstice (Dec 21)</option>
   </select>
   <label>Minimum sunlight: <span id="threshold-label">0.0</span>h</label>
-  <input type="range" id="threshold-slider" min="0" max="{vmax:.1f}" step="0.5" value="0">
+  <input type="range" id="threshold-slider" min="0" max="16" step="0.5" value="0">
 </div>
 
 <div id="legend" style="display:none">
   <b>Effective Sunlight (hours)</b><br>
   <div style="display:flex;align-items:center;margin-top:5px;">
-    <span>{vmin:.1f}h</span>
+    <span id="legend-min"></span>
     <div style="width:150px;height:15px;margin:0 5px;
                 background:linear-gradient(to right,#ffffb2,#fed976,#feb24c,#fd8d3c,#f03b20,#bd0026);"></div>
-    <span>{vmax:.1f}h</span>
+    <span id="legend-max"></span>
   </div>
   <div style="margin-top:4px;font-size:11px;color:#666;">
     <span style="display:inline-block;width:12px;height:12px;background:repeating-linear-gradient(45deg,#ccc,#ccc 2px,#fff 2px,#fff 4px);vertical-align:middle;margin-right:4px;"></span>
@@ -560,8 +566,10 @@ def write_viewer_html(
 
 <script>
 var LUT = {lut_js};
-var VMIN = {vmin};
-var VMAX = {vmax};
+var VRANGES = {{
+  summer: [{s_vmin}, {s_vmax}],
+  winter: [{w_vmin}, {w_vmax}]
+}};
 var W = {W}, H = {H};
 var BBOX = [{lon_min}, {lat_min}, {lon_max}, {lat_max}];
 var BOUNDS = [[{lat_min}, {lon_min}], [{lat_max}, {lon_max}]];
@@ -576,7 +584,6 @@ var DATA = null;
 var overlay = null;
 
 async function loadData() {{
-  // Decode base64 -> gzip decompress -> raw uint8 bands
   var bin = atob(DATA_GZ_B64);
   var gz = new Uint8Array(bin.length);
   for (var i = 0; i < bin.length; i++) gz[i] = bin.charCodeAt(i);
@@ -598,11 +605,20 @@ async function loadData() {{
   renderOverlay();
 }}
 
+function pxToHours(val, season) {{
+  var r = VRANGES[season];
+  return (val - 1) / 254 * (r[1] - r[0]) + r[0];
+}}
+
 function renderOverlay() {{
   if (!DATA) return;
   var season = document.getElementById('season-select').value;
   var threshold = parseFloat(document.getElementById('threshold-slider').value);
   var data = DATA[season];
+  var r = VRANGES[season];
+
+  document.getElementById('legend-min').textContent = r[0].toFixed(1) + 'h';
+  document.getElementById('legend-max').textContent = r[1].toFixed(1) + 'h';
 
   var canvas = document.createElement('canvas');
   canvas.width = W;
@@ -611,7 +627,8 @@ function renderOverlay() {{
   var imgData = ctx.createImageData(W, H);
   var out = imgData.data;
 
-  var threshPx = Math.round(((threshold - VMIN) / (VMAX - VMIN)) * 254 + 1);
+  // Convert threshold (hours) to pixel value for this season
+  var threshPx = Math.round(((threshold - r[0]) / (r[1] - r[0])) * 254 + 1);
 
   for (var i = 0; i < W * H; i++) {{
     var val = data[i];
@@ -656,8 +673,8 @@ map.on('click', function(e) {{
   var sv = DATA.summer[idx], wv = DATA.winter[idx];
   if (sv === 0 && wv === 0) return;
 
-  var sh = ((sv - 1) / 254 * (VMAX - VMIN) + VMIN).toFixed(1);
-  var wh = ((wv - 1) / 254 * (VMAX - VMIN) + VMIN).toFixed(1);
+  var sh = pxToHours(sv, 'summer').toFixed(1);
+  var wh = pxToHours(wv, 'winter').toFixed(1);
 
   L.popup().setLatLng(e.latlng).setContent(
     '<b>Summer:</b> ' + sh + 'h<br>' +
@@ -680,8 +697,8 @@ def build_map(
     grid: np.ndarray,
     meta: dict,
 ) -> None:
-    encoded, vmin, vmax, wgs_meta = save_geotiff(sunlight, grid, meta)
-    write_viewer_html(encoded, vmin, vmax, wgs_meta)
+    encoded, vranges, wgs_meta = save_geotiff(sunlight, grid, meta)
+    write_viewer_html(encoded, vranges, wgs_meta)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
