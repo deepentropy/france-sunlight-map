@@ -1,9 +1,15 @@
 .DS_Store
 .ipynb_checkpoints
+__pycache__/
 daylight_results/
 RGEALTI/
+data/
+.tmp/
 *.log
 *.html
+*.tif
+*.lock
 /.idea
 rgealti_links.txt
 /npy
+screenshot_*.png

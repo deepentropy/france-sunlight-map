@@ -2,24 +2,18 @@
 name = "sunlight-extractor"
 version = "0.1.0"
 description = ""
-authors = [
-    {name = "Odyssée",email = "8287111+houseofai@users.noreply.github.com"}
-]
-readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
-    "bs4 (==0.0.2)",
-    "notebook (>=7.4.7,<8.0.0)",
-    "wget (>=3.2,<4.0)",
-    "py7zr (==1.0.0)",
-    "rasterio (==1.4.3)",
-    "rio-cogeo (>=5.4.2,<6.0.0)",
-    "rtree (>=1.4.1,<2.0.0)",
-    "shapely (>=2.1.2,<3.0.0)",
-    "rio-tiler (==7.9.2)"
+    "cupy-cuda12x",
+    "rasterio",
+    "py7zr",
+    "numpy",
+    "pvlib",
+    "matplotlib",
+    "pyproj",
+    "requests",
+    "tqdm",
 ]
 
-
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.uv]
+package = false
