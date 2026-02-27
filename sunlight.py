@@ -561,7 +561,7 @@ def write_viewer_html(
     <option value="winter">Winter Solstice (Dec 21)</option>
   </select>
   <label>Minimum sunlight: <span id="threshold-label">0.0</span>h</label>
-  <input type="range" id="threshold-slider" min="0" max="16" step="0.5" value="0">
+  <input type="range" id="threshold-slider" min="0" max="16" step="0.1" value="0">
 </div>
 
 <div id="legend" style="display:none">
@@ -635,6 +635,10 @@ function renderOverlay() {{
   document.getElementById('legend-min').textContent = r[0].toFixed(1) + 'h';
   document.getElementById('legend-max').textContent = r[1].toFixed(1) + 'h';
 
+  var slider = document.getElementById('threshold-slider');
+  slider.max = r[1].toFixed(1);
+  document.getElementById('threshold-label').textContent = parseFloat(slider.value).toFixed(1);
+
   var canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -669,7 +673,10 @@ function renderOverlay() {{
   overlay = L.imageOverlay(url, BOUNDS).addTo(map);
 }}
 
-document.getElementById('season-select').addEventListener('change', renderOverlay);
+document.getElementById('season-select').addEventListener('change', function() {{
+  document.getElementById('threshold-slider').value = 0;
+  renderOverlay();
+}});
 document.getElementById('threshold-slider').addEventListener('input', function() {{
   document.getElementById('threshold-label').textContent = this.value;
   renderOverlay();
