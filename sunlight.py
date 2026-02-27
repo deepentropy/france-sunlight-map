@@ -367,10 +367,14 @@ def compute_sunlight(horizons: np.ndarray, solar: dict[str, pd.DataFrame]) -> di
 
 # ── Step 8: GeoTIFF + HTML viewer ────────────────────────────────────────────
 
-def reproject_to_wgs84(
+def reproject_to_webmercator(
     data: np.ndarray, meta: dict
 ) -> tuple[np.ndarray, dict]:
-    """Reproject a 2D float32 array from Lambert-93 to WGS84."""
+    """Reproject a 2D float32 array from Lambert-93 to Web Mercator (EPSG:3857).
+
+    Web Mercator matches Leaflet's display projection, so imageOverlay aligns
+    correctly with the base map tiles (no vertical distortion).
+    """
     H, W = data.shape
     min_x = meta["min_x"]
     max_y = meta["max_y"]
@@ -380,30 +384,36 @@ def reproject_to_wgs84(
 
     src_transform = from_bounds(min_x, min_y, max_x, max_y, W, H)
 
-    dst_bounds = rasterio.warp.transform_bounds("EPSG:2154", "EPSG:4326", min_x, min_y, max_x, max_y)
-    lon_min, lat_min, lon_max, lat_max = dst_bounds
+    # Reproject to Web Mercator (meters)
+    mx_min, my_min, mx_max, my_max = rasterio.warp.transform_bounds(
+        "EPSG:2154", "EPSG:3857", min_x, min_y, max_x, max_y
+    )
+    dst_transform = from_bounds(mx_min, my_min, mx_max, my_max, W, H)
 
-    dst_w = W
-    dst_h = H
-    dst_transform = from_bounds(lon_min, lat_min, lon_max, lat_max, dst_w, dst_h)
-
-    dst_data = np.full((dst_h, dst_w), np.nan, dtype=np.float32)
+    dst_data = np.full((H, W), np.nan, dtype=np.float32)
     rasterio.warp.reproject(
         source=data,
         destination=dst_data,
         src_transform=src_transform,
         src_crs="EPSG:2154",
         dst_transform=dst_transform,
-        dst_crs="EPSG:4326",
+        dst_crs="EPSG:3857",
         resampling=rasterio.warp.Resampling.nearest,
         src_nodata=np.nan,
         dst_nodata=np.nan,
     )
-    wgs84_meta = {
+
+    # Also compute lat/lon bounds for Leaflet
+    lon_min, lat_min, lon_max, lat_max = rasterio.warp.transform_bounds(
+        "EPSG:3857", "EPSG:4326", mx_min, my_min, mx_max, my_max
+    )
+
+    return dst_data, {
+        "mx_min": mx_min, "my_min": my_min,
+        "mx_max": mx_max, "my_max": my_max,
         "lon_min": lon_min, "lat_min": lat_min,
         "lon_max": lon_max, "lat_max": lat_max,
     }
-    return dst_data, wgs84_meta
 
 
 def save_geotiff(
@@ -419,27 +429,26 @@ def save_geotiff(
     for label in sunlight:
         sunlight[label][nodata_mask] = np.nan
 
-    # Reproject to WGS84
-    print("  Reprojecting to WGS84...")
-    grid_wgs, wgs_meta = reproject_to_wgs84(grid, meta)
-    sunlight_wgs = {}
+    print("  Reprojecting to Web Mercator...")
+    grid_wm, wm_meta = reproject_to_webmercator(grid, meta)
+    sunlight_wm = {}
     for label in sunlight:
-        sunlight_wgs[label], _ = reproject_to_wgs84(sunlight[label], meta)
+        sunlight_wm[label], _ = reproject_to_webmercator(sunlight[label], meta)
 
-    valid_mask = ~np.isnan(grid_wgs)
+    valid_mask = ~np.isnan(grid_wm)
 
     # Per-season percentile-based scaling for better contrast
-    H, W = grid_wgs.shape
+    H, W = grid_wm.shape
     encoded = {}
     vranges = {}
     for label in ["summer", "winter"]:
-        vals = sunlight_wgs[label][valid_mask]
+        vals = sunlight_wm[label][valid_mask]
         vmin = float(np.percentile(vals, 1))
         vmax = float(np.percentile(vals, 99))
         vranges[label] = (vmin, vmax)
         print(f"  {label}: p1={vmin:.1f}h, p99={vmax:.1f}h")
 
-        data = sunlight_wgs[label]
+        data = sunlight_wm[label]
         nd = np.isnan(data)
         safe = np.nan_to_num(data, nan=vmin)
         scaled = np.clip((safe - vmin) / (vmax - vmin), 0, 1) * 254 + 1
@@ -447,15 +456,16 @@ def save_geotiff(
         u8[nd] = 0
         encoded[label] = u8
 
-    # Write tiled GeoTIFF with overviews
-    lon_min, lat_min = wgs_meta["lon_min"], wgs_meta["lat_min"]
-    lon_max, lat_max = wgs_meta["lon_max"], wgs_meta["lat_max"]
-    transform = from_bounds(lon_min, lat_min, lon_max, lat_max, W, H)
+    # Write tiled GeoTIFF with overviews (Web Mercator)
+    transform = from_bounds(
+        wm_meta["mx_min"], wm_meta["my_min"],
+        wm_meta["mx_max"], wm_meta["my_max"], W, H
+    )
 
     with rasterio.open(
         OUTPUT_TIFF, "w", driver="GTiff",
         height=H, width=W, count=2, dtype="uint8",
-        crs="EPSG:4326", transform=transform, nodata=0,
+        crs="EPSG:3857", transform=transform, nodata=0,
         tiled=True, blockxsize=256, blockysize=256, compress="deflate",
     ) as dst:
         dst.write(encoded["summer"], 1)
@@ -467,12 +477,12 @@ def save_geotiff(
 
     size_mb = os.path.getsize(OUTPUT_TIFF) / 1e6
     print(f"  Saved: {OUTPUT_TIFF} ({size_mb:.1f} MB)")
-    return encoded, vranges, wgs_meta
+    return encoded, vranges, wm_meta
 
 
 def write_viewer_html(
     encoded: dict[str, np.ndarray],
-    vranges: dict[str, tuple[float, float]], wgs_meta: dict,
+    vranges: dict[str, tuple[float, float]], wm_meta: dict,
 ) -> None:
     """Write standalone HTML viewer with embedded gzipped band data."""
     import gzip
@@ -500,10 +510,14 @@ def write_viewer_html(
             lut.append([int(r * 255), int(g * 255), int(b * 255), 153])
     lut_js = json.dumps(lut)
 
-    lon_min = wgs_meta["lon_min"]
-    lat_min = wgs_meta["lat_min"]
-    lon_max = wgs_meta["lon_max"]
-    lat_max = wgs_meta["lat_max"]
+    lon_min = wm_meta["lon_min"]
+    lat_min = wm_meta["lat_min"]
+    lon_max = wm_meta["lon_max"]
+    lat_max = wm_meta["lat_max"]
+    mx_min = wm_meta["mx_min"]
+    my_min = wm_meta["my_min"]
+    mx_max = wm_meta["mx_max"]
+    my_max = wm_meta["my_max"]
     center_lat = (lat_min + lat_max) / 2
     center_lon = (lon_min + lon_max) / 2
 
@@ -572,6 +586,7 @@ var VRANGES = {{
 }};
 var W = {W}, H = {H};
 var BBOX = [{lon_min}, {lat_min}, {lon_max}, {lat_max}];
+var MX_MIN = {mx_min}, MY_MIN = {my_min}, MX_MAX = {mx_max}, MY_MAX = {my_max};
 var BOUNDS = [[{lat_min}, {lon_min}], [{lat_max}, {lon_max}]];
 
 var map = L.map('map').setView([{center_lat}, {center_lon}], 6);
@@ -666,7 +681,8 @@ map.on('click', function(e) {{
   if (lon < BBOX[0] || lon > BBOX[2] || lat < BBOX[1] || lat > BBOX[3]) return;
 
   var col = Math.floor((lon - BBOX[0]) / (BBOX[2] - BBOX[0]) * W);
-  var row = Math.floor((BBOX[3] - lat) / (BBOX[3] - BBOX[1]) * H);
+  var my = Math.log(Math.tan(Math.PI/4 + lat * Math.PI/360)) * 6378137;
+  var row = Math.floor((MY_MAX - my) / (MY_MAX - MY_MIN) * H);
   if (col < 0 || col >= W || row < 0 || row >= H) return;
 
   var idx = row * W + col;
@@ -697,8 +713,8 @@ def build_map(
     grid: np.ndarray,
     meta: dict,
 ) -> None:
-    encoded, vranges, wgs_meta = save_geotiff(sunlight, grid, meta)
-    write_viewer_html(encoded, vranges, wgs_meta)
+    encoded, vranges, wm_meta = save_geotiff(sunlight, grid, meta)
+    write_viewer_html(encoded, vranges, wm_meta)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
