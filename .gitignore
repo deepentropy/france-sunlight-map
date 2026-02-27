@@ -10,6 +10,9 @@ data/
 *.tif
 *.lock
 /.idea
+/.claude
+/.venv
+/.playwright-mcp
 geoservices/page_links.txt
 /npy
 screenshot_*.png

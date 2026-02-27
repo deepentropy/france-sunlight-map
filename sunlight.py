@@ -437,22 +437,28 @@ def save_geotiff(
 
     valid_mask = ~np.isnan(grid_wm)
 
-    # Per-season percentile-based scaling for better contrast
+    # Histogram-equalized encoding for maximum visual contrast
     H, W = grid_wm.shape
     encoded = {}
-    vranges = {}
+    inv_luts = {}
     for label in ["summer", "winter"]:
         vals = sunlight_wm[label][valid_mask]
-        vmin = float(np.percentile(vals, 1))
-        vmax = float(np.percentile(vals, 99))
-        vranges[label] = (vmin, vmax)
-        print(f"  {label}: p1={vmin:.1f}h, p99={vmax:.1f}h")
+        sorted_vals = np.sort(vals)
+        N = len(sorted_vals)
+        print(f"  {label}: min={sorted_vals[0]:.1f}h, max={sorted_vals[-1]:.1f}h")
 
+        # Inverse LUT: encoded value (1-255) -> hours
+        inv_lut = [0.0]
+        for e in range(1, 256):
+            inv_lut.append(round(float(sorted_vals[round((e - 1) / 254 * (N - 1))]), 2))
+        inv_luts[label] = inv_lut
+
+        # Encode via rank (histogram equalization)
         data = sunlight_wm[label]
         nd = np.isnan(data)
-        safe = np.nan_to_num(data, nan=vmin)
-        scaled = np.clip((safe - vmin) / (vmax - vmin), 0, 1) * 254 + 1
-        u8 = scaled.astype(np.uint8)
+        safe = np.nan_to_num(data, nan=sorted_vals[0])
+        ranks = np.searchsorted(sorted_vals, safe, side='right').astype(np.float64)
+        u8 = np.clip(np.round(ranks / N * 254) + 1, 1, 255).astype(np.uint8)
         u8[nd] = 0
         encoded[label] = u8
 
@@ -477,20 +483,19 @@ def save_geotiff(
 
     size_mb = os.path.getsize(OUTPUT_TIFF) / 1e6
     print(f"  Saved: {OUTPUT_TIFF} ({size_mb:.1f} MB)")
-    return encoded, vranges, wm_meta
+    return encoded, inv_luts, wm_meta
 
 
 def write_viewer_html(
     encoded: dict[str, np.ndarray],
-    vranges: dict[str, tuple[float, float]], wm_meta: dict,
+    inv_luts: dict[str, list[float]], wm_meta: dict,
 ) -> None:
     """Write standalone HTML viewer with embedded gzipped band data."""
     import gzip
     print("\n=== Writing HTML viewer ===")
 
     H, W = encoded["summer"].shape
-    s_vmin, s_vmax = vranges["summer"]
-    w_vmin, w_vmax = vranges["winter"]
+    inv_luts_js = json.dumps(inv_luts)
 
     # Gzip raw band bytes
     raw = encoded["summer"].tobytes() + encoded["winter"].tobytes()
@@ -498,8 +503,20 @@ def write_viewer_html(
     data_b64 = base64.b64encode(compressed).decode()
     print(f"  Raw: {len(raw) / 1e6:.1f} MB -> gzipped b64: {len(data_b64) / 1e6:.1f} MB")
 
-    # Generate YlOrRd 256-entry LUT as JS array
-    cmap = matplotlib.colormaps["YlOrRd"]
+    # Compute CDF per season for percentile rank in popup
+    cdf_data = {}
+    for label in ["summer", "winter"]:
+        valid = encoded[label][encoded[label] > 0]
+        counts = np.bincount(valid, minlength=256)
+        cumsum = np.cumsum(counts)
+        total = cumsum[255]
+        pct = (cumsum / total * 100).astype(int).tolist()
+        pct[0] = 0
+        cdf_data[label] = pct
+    cdf_js = json.dumps(cdf_data)
+
+    # Generate turbo 256-entry LUT as JS array
+    cmap = matplotlib.colormaps["turbo"]
     lut = []
     for i in range(256):
         if i == 0:
@@ -539,6 +556,7 @@ def write_viewer_html(
   }}
   #controls label {{ font-weight:bold; display:block; margin-bottom:6px; }}
   #controls select, #controls input[type=range] {{ width:100%; margin-bottom:8px; }}
+  #search-input {{ box-sizing:border-box; width:100%; margin-bottom:4px; padding:4px 6px; font-size:13px; }}
   #legend {{
     position:fixed; bottom:30px; left:30px; z-index:9999;
     background:white; padding:10px; border-radius:5px;
@@ -562,6 +580,9 @@ def write_viewer_html(
   </select>
   <label>Minimum sunlight: <span id="threshold-label">0.0</span>h</label>
   <input type="range" id="threshold-slider" min="0" max="16" step="0.1" value="0">
+  <label>Search</label>
+  <input type="text" id="search-input" placeholder="Address or city...">
+  <button onclick="doSearch()" style="width:100%;margin-bottom:4px;padding:4px;cursor:pointer;">Go</button>
 </div>
 
 <div id="legend" style="display:none">
@@ -569,7 +590,7 @@ def write_viewer_html(
   <div style="display:flex;align-items:center;margin-top:5px;">
     <span id="legend-min"></span>
     <div style="width:150px;height:15px;margin:0 5px;
-                background:linear-gradient(to right,#ffffb2,#fed976,#feb24c,#fd8d3c,#f03b20,#bd0026);"></div>
+                background:linear-gradient(to right,#30123b,#4662d7,#1ae4b6,#a2fc3c,#faba39,#e02c04,#7a0403);"></div>
     <span id="legend-max"></span>
   </div>
   <div style="margin-top:4px;font-size:11px;color:#666;">
@@ -580,10 +601,8 @@ def write_viewer_html(
 
 <script>
 var LUT = {lut_js};
-var VRANGES = {{
-  summer: [{s_vmin}, {s_vmax}],
-  winter: [{w_vmin}, {w_vmax}]
-}};
+var CDF = {cdf_js};
+var INV_LUT = {inv_luts_js};
 var W = {W}, H = {H};
 var BBOX = [{lon_min}, {lat_min}, {lon_max}, {lat_max}];
 var MX_MIN = {mx_min}, MY_MIN = {my_min}, MX_MAX = {mx_max}, MY_MAX = {my_max};
@@ -621,8 +640,7 @@ async function loadData() {{
 }}
 
 function pxToHours(val, season) {{
-  var r = VRANGES[season];
-  return (val - 1) / 254 * (r[1] - r[0]) + r[0];
+  return INV_LUT[season][val];
 }}
 
 function renderOverlay() {{
@@ -630,13 +648,13 @@ function renderOverlay() {{
   var season = document.getElementById('season-select').value;
   var threshold = parseFloat(document.getElementById('threshold-slider').value);
   var data = DATA[season];
-  var r = VRANGES[season];
+  var inv = INV_LUT[season];
 
-  document.getElementById('legend-min').textContent = r[0].toFixed(1) + 'h';
-  document.getElementById('legend-max').textContent = r[1].toFixed(1) + 'h';
+  document.getElementById('legend-min').textContent = inv[1].toFixed(1) + 'h';
+  document.getElementById('legend-max').textContent = inv[255].toFixed(1) + 'h';
 
   var slider = document.getElementById('threshold-slider');
-  slider.max = r[1].toFixed(1);
+  slider.max = inv[255].toFixed(1);
   document.getElementById('threshold-label').textContent = parseFloat(slider.value).toFixed(1);
 
   var canvas = document.createElement('canvas');
@@ -646,8 +664,9 @@ function renderOverlay() {{
   var imgData = ctx.createImageData(W, H);
   var out = imgData.data;
 
-  // Convert threshold (hours) to pixel value for this season
-  var threshPx = Math.round(((threshold - r[0]) / (r[1] - r[0])) * 254 + 1);
+  // Convert threshold (hours) to encoded value via inverse LUT
+  var threshPx = 256;
+  for (var t = 1; t < 256; t++) {{ if (inv[t] >= threshold) {{ threshPx = t; break; }} }}
 
   for (var i = 0; i < W * H; i++) {{
     var val = data[i];
@@ -682,9 +701,8 @@ document.getElementById('threshold-slider').addEventListener('input', function()
   renderOverlay();
 }});
 
-map.on('click', function(e) {{
+function showPopupAt(lat, lon) {{
   if (!DATA) return;
-  var lat = e.latlng.lat, lon = e.latlng.lng;
   if (lon < BBOX[0] || lon > BBOX[2] || lat < BBOX[1] || lat > BBOX[3]) return;
 
   var col = Math.floor((lon - BBOX[0]) / (BBOX[2] - BBOX[0]) * W);
@@ -698,11 +716,49 @@ map.on('click', function(e) {{
 
   var sh = pxToHours(sv, 'summer').toFixed(1);
   var wh = pxToHours(wv, 'winter').toFixed(1);
+  var sp = 100 - CDF.summer[sv];
+  var wp = 100 - CDF.winter[wv];
 
-  L.popup().setLatLng(e.latlng).setContent(
-    '<b>Summer:</b> ' + sh + 'h<br>' +
-    '<b>Winter:</b> ' + wh + 'h'
+  var popup = L.popup().setLatLng([lat, lon]).setContent(
+    '<b>Lat:</b> ' + lat.toFixed(4) + ' <b>Lon:</b> ' + lon.toFixed(4) + '<br>' +
+    '<b>Summer:</b> ' + sh + 'h (top ' + sp + '%)<br>' +
+    '<b>Winter:</b> ' + wh + 'h (top ' + wp + '%)<br>' +
+    '<i>Loading address...</i>'
   ).openOn(map);
+
+  fetch('https://nominatim.openstreetmap.org/reverse?lat=' + lat + '&lon=' + lon + '&format=json&zoom=14', {{
+    headers: {{'User-Agent': 'sunlight-extractor'}}
+  }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+    if (data.display_name && map.hasLayer(popup)) {{
+      popup.setContent(
+        '<b>Lat:</b> ' + lat.toFixed(4) + ' <b>Lon:</b> ' + lon.toFixed(4) + '<br>' +
+        '<b>Summer:</b> ' + sh + 'h (top ' + sp + '%)<br>' +
+        '<b>Winter:</b> ' + wh + 'h (top ' + wp + '%)<br>' +
+        data.display_name
+      );
+    }}
+  }}).catch(function() {{}});
+}}
+
+map.on('click', function(e) {{
+  showPopupAt(e.latlng.lat, e.latlng.lng);
+}});
+
+function doSearch() {{
+  var q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  fetch('https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(q) + '&countrycodes=fr&format=json&limit=1', {{
+    headers: {{'User-Agent': 'sunlight-extractor'}}
+  }}).then(function(r) {{ return r.json(); }}).then(function(results) {{
+    if (results.length === 0) return;
+    var lat = parseFloat(results[0].lat);
+    var lon = parseFloat(results[0].lon);
+    map.flyTo([lat, lon], 11);
+    showPopupAt(lat, lon);
+  }}).catch(function() {{}});
+}}
+document.getElementById('search-input').addEventListener('keydown', function(e) {{
+  if (e.key === 'Enter') doSearch();
 }});
 
 loadData();
@@ -720,8 +776,8 @@ def build_map(
     grid: np.ndarray,
     meta: dict,
 ) -> None:
-    encoded, vranges, wm_meta = save_geotiff(sunlight, grid, meta)
-    write_viewer_html(encoded, vranges, wm_meta)
+    encoded, inv_luts, wm_meta = save_geotiff(sunlight, grid, meta)
+    write_viewer_html(encoded, inv_luts, wm_meta)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
